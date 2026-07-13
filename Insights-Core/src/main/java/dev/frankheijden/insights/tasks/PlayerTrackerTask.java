@@ -56,6 +56,15 @@ public class PlayerTrackerTask extends InsightsAsyncTask {
                 this.scanLocations.put(loc, now);
 
                 Bukkit.getRegionScheduler().run(plugin, world, chunkX, chunkZ, scheduledTask -> {
+                    // The isChunkLoaded() check above ran on this task's own thread, so the chunk
+                    // may have unloaded before this callback fires, in which case getChunkAt()
+                    // would load and possibly generate it synchronously. Re-checking here is
+                    // reliable: this runs on the thread owning the chunk, so it cannot unload
+                    // between the check and the getChunkAt() below.
+                    if (!world.isChunkLoaded(chunkX, chunkZ)) {
+                        this.scanLocations.remove(loc);
+                        return;
+                    }
                     var chunk = world.getChunkAt(chunkX, chunkZ);
                     plugin.getChunkContainerExecutor().submit(chunk, ScanOptions.all()).whenComplete((s, e) -> {
                         if (s == null) {
