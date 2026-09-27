@@ -6,12 +6,15 @@ import dev.frankheijden.insights.api.config.limits.Limit;
 import dev.frankheijden.insights.api.config.limits.LimitType;
 import dev.frankheijden.insights.api.objects.wrappers.ScanObject;
 import org.bukkit.Material;
+import org.bukkit.NamespacedKey;
 import org.bukkit.Tag;
 import org.bukkit.World;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumSet;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 import java.util.logging.Logger;
@@ -37,23 +40,26 @@ final class RefundConfig {
     private final Limit limit;
     private final RefundGroup[] groups;
     private final RefundGroup[] groupsByMaterial;
+    private final Set<NamespacedKey> ignoredDataKeys;
 
     private RefundConfig(
             Settings settings,
             Limits limits,
             Limit limit,
             RefundGroup[] groups,
-            RefundGroup[] groupsByMaterial
+            RefundGroup[] groupsByMaterial,
+            Set<NamespacedKey> ignoredDataKeys
     ) {
         this.settings = settings;
         this.limits = limits;
         this.limit = limit;
         this.groups = groups;
         this.groupsByMaterial = groupsByMaterial;
+        this.ignoredDataKeys = ignoredDataKeys;
     }
 
     static RefundConfig disabled(Settings settings, Limits limits) {
-        return new RefundConfig(settings, limits, null, new RefundGroup[0], new RefundGroup[0]);
+        return new RefundConfig(settings, limits, null, new RefundGroup[0], new RefundGroup[0], Set.of());
     }
 
     /**
@@ -132,7 +138,25 @@ final class RefundConfig {
             logger.warning("Graceful refund is disabled: none of its materials can be refunded.");
             return disabled(settings, limits);
         }
-        return new RefundConfig(settings, limits, limit, groups.toArray(new RefundGroup[0]), groupsByMaterial);
+
+        Set<NamespacedKey> ignoredDataKeys = new HashSet<>();
+        for (String key : settings.GRACEFUL_REFUND_IGNORED_DATA_KEYS) {
+            NamespacedKey namespacedKey = NamespacedKey.fromString(key.toLowerCase(Locale.ROOT));
+            if (namespacedKey == null) {
+                logger.warning("Graceful refund: '" + key + "' is not a valid data key, ignoring it.");
+            } else {
+                ignoredDataKeys.add(namespacedKey);
+            }
+        }
+
+        return new RefundConfig(
+                settings,
+                limits,
+                limit,
+                groups.toArray(new RefundGroup[0]),
+                groupsByMaterial,
+                Collections.unmodifiableSet(ignoredDataKeys)
+        );
     }
 
     /**
@@ -170,6 +194,13 @@ final class RefundConfig {
      */
     RefundGroup group(Material material) {
         return groupsByMaterial[material.ordinal()];
+    }
+
+    /**
+     * Returns whether data other plugins keep under the given key on a container is fine to lose with it.
+     */
+    boolean isIgnoredDataKey(NamespacedKey key) {
+        return ignoredDataKeys.contains(key);
     }
 
     boolean appliesTo(World world) {

@@ -9,6 +9,7 @@ import dev.frankheijden.insights.api.utils.EnumUtils;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.NamespacedKey;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
@@ -36,6 +37,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -63,6 +65,7 @@ final class RefundRun {
     private final int maxY;
     private final int[][] found;
     private final int rememberedChest;
+    private final Set<String> skipReasons = new LinkedHashSet<>();
 
     RefundRun(
             GracefulRefund refund,
@@ -114,8 +117,7 @@ final class RefundRun {
             existingChest = null;
             plan = plan(candidates, excess, null);
             if (plan.isEmpty()) {
-                logSkipped(exceeded, "none of those blocks can be handed back as a whole (named or plugin-tagged "
-                        + "containers, containers with loot yet to generate, blocks spanning several blocks or items)");
+                logSkipped(exceeded, "none of those blocks can be handed back as a whole: " + String.join(", ", skipReasons));
                 return Result.NOTHING;
             }
 
@@ -449,7 +451,7 @@ final class RefundRun {
      * or null if the block can't be handed back as a whole.
      */
     private List<ItemStack> refundItems(Block block, RefundGroup group) {
-        if (!isSingleBlock(block.getBlockData())) return null;
+        if (!isSingleBlock(block.getBlockData())) return skip("they span several blocks or hold several items");
 
         List<ItemStack> items = new ArrayList<>();
         items.add(new ItemStack(group.refundMaterial()));
@@ -458,13 +460,21 @@ final class RefundRun {
         if (state instanceof TileState tile) {
             // Blocks keeping more than an inventory (e.g. spawners, signs) can't be handed back as an item,
             // chests may be half of a double chest and shulker boxes keep their contents as item.
-            if (!(tile instanceof Container container) || tile instanceof Chest || tile instanceof ShulkerBox) return null;
+            if (!(tile instanceof Container container) || tile instanceof Chest || tile instanceof ShulkerBox) {
+                return skip("they keep data an item can't carry");
+            }
 
             // Named containers, or containers other plugins keep data on, may well be custom blocks.
-            if (container.customName() != null || !tile.getPersistentDataContainer().isEmpty()) return null;
+            // Data which is fine to lose with the block (settings.graceful-refund.ignored-data-keys) is let through.
+            if (container.customName() != null) return skip("they are named");
+            for (NamespacedKey key : tile.getPersistentDataContainer().getKeys()) {
+                if (!cfg.isIgnoredDataKey(key)) return skip("another plugin keeps data on them (" + key + ")");
+            }
 
             // Loot which has not been generated yet would be lost.
-            if (container instanceof Lootable lootable && lootable.getLootTable() != null) return null;
+            if (container instanceof Lootable lootable && lootable.getLootTable() != null) {
+                return skip("their loot is yet to generate");
+            }
 
             for (ItemStack stack : container.getInventory().getContents()) {
                 if (stack != null && !stack.getType().isAir()) {
@@ -474,7 +484,12 @@ final class RefundRun {
         }
 
         // A block which would not even fit into an empty chest can never be refunded.
-        return ChestSpace.slotsNeeded(items) <= CHEST_SIZE ? items : null;
+        return ChestSpace.slotsNeeded(items) <= CHEST_SIZE ? items : skip("they hold more than a chest fits");
+    }
+
+    private List<ItemStack> skip(String reason) {
+        skipReasons.add(reason);
+        return null;
     }
 
     /**

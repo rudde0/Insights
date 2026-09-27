@@ -58,6 +58,7 @@ public class Settings {
     public final boolean GRACEFUL_REFUND_ENABLED;
     public final String GRACEFUL_REFUND_LIMIT_FILE;
     public final List<Material> GRACEFUL_REFUND_MATERIALS;
+    public final List<String> GRACEFUL_REFUND_IGNORED_DATA_KEYS;
     public final int GRACEFUL_REFUND_DELAY_TICKS;
     public final int GRACEFUL_REFUND_COOLDOWN_SECONDS;
     public final int GRACEFUL_REFUND_MAX_BLOCKS_PER_RUN;
@@ -138,6 +139,7 @@ public class Settings {
         GRACEFUL_REFUND_ENABLED = parser.getBoolean("settings.graceful-refund.enabled", false);
         GRACEFUL_REFUND_LIMIT_FILE = parser.getString("settings.graceful-refund.limit-file", "general.yml");
         GRACEFUL_REFUND_MATERIALS = parser.getEnums("settings.graceful-refund.materials", Material.class, "material");
+        GRACEFUL_REFUND_IGNORED_DATA_KEYS = parser.getList("settings.graceful-refund.ignored-data-keys");
         GRACEFUL_REFUND_DELAY_TICKS = parser.getInt("settings.graceful-refund.delay-ticks", 100, 1, 20 * 60 * 60);
         GRACEFUL_REFUND_COOLDOWN_SECONDS = parser.getInt("settings.graceful-refund.cooldown-seconds", 60, 1, Integer.MAX_VALUE);
         GRACEFUL_REFUND_MAX_BLOCKS_PER_RUN = parser.getInt("settings.graceful-refund.max-blocks-per-run", 16, 1, 4096);

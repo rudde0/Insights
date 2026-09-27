@@ -58,6 +58,8 @@ settings:
       - "PISTON"
       - "STICKY_PISTON"
       - "OBSERVER"
+    ignored-data-keys:
+      - "quickshop-hikari:hopper-persistent-data"
     delay-ticks: 100
     cooldown-seconds: 60
     max-blocks-per-run: 16
