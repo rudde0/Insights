@@ -62,6 +62,26 @@ public final class InsightsApi {
     }
 
     /**
+     * Returns whether the counts of the chunk the player stands in are older than the refresh interval
+     * ({@code settings.chunk-scans.refresh-interval-seconds}), so changes made without an event (e.g. through
+     * WorldEdit) may be missing from them. Regions of addons are never refreshed, so this is always false inside
+     * of one, as it is when the chunk has no data at all.
+     */
+    public static boolean isOutdated(Player player) {
+        var plugin = InsightsPlugin.getInstance();
+        long refreshIntervalMillis = plugin.getSettings().CHUNK_SCANS_REFRESH_INTERVAL_MILLIS;
+        if (refreshIntervalMillis <= 0) return false;
+
+        Location location = player.getLocation();
+        if (plugin.getAddonManager().getRegion(location).isPresent()) return false;
+        return plugin.getWorldStorage()
+                .getWorld(location.getWorld().getUID())
+                .get(ChunkUtils.getKey(location))
+                .map(storage -> storage.getAgeMillis() >= refreshIntervalMillis)
+                .orElse(false);
+    }
+
+    /**
      * Returns whether the area the player stands in is currently waiting to be scanned.
      */
     public static boolean isScanQueued(Player player) {

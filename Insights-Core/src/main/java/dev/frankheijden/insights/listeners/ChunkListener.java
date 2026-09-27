@@ -25,5 +25,6 @@ public class ChunkListener extends InsightsListener {
         long chunkKey = ChunkUtils.getKey(chunk);
         plugin.getWorldStorage().getWorld(chunk.getWorld().getUID()).remove(chunkKey);
         insights.getRedstoneUpdateCount().remove(chunkKey);
+        plugin.getGracefulRefund().onChunkUnload(chunk.getWorld(), chunkKey);
     }
 }

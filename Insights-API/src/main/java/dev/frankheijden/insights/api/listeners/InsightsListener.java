@@ -68,14 +68,21 @@ public abstract class InsightsListener extends InsightsBase implements Listener 
     protected void handleModification(Location location, Material from, Material to, int amount) {
         // Same lookups and modifications, in the same order, as handleModification(location, storageConsumer),
         // without a consumer and Optional chain per call: this runs for every tracked block change.
-        UUID worldUid = location.getWorld().getUID();
+        // The region is looked up first as the graceful refund check of the chunk depends on it.
+        World world = location.getWorld();
         long chunkKey = ChunkUtils.getKey(location);
-        Optional<Storage> chunkStorageOptional = plugin.getWorldStorage().getWorld(worldUid).get(chunkKey);
+        Optional<Storage> chunkStorageOptional = plugin.getWorldStorage().getWorld(world.getUID()).get(chunkKey);
+        Optional<Region> regionOptional = plugin.getAddonManager().getRegion(location);
         if (chunkStorageOptional.isPresent()) {
-            modify(chunkStorageOptional.get(), from, to, amount);
+            Storage chunkStorage = chunkStorageOptional.get();
+            modify(chunkStorage, from, to, amount);
+
+            // Blocks inside regions are limited by region, the limit of the chunk does not apply to them.
+            if (regionOptional.isEmpty()) {
+                plugin.getGracefulRefund().onBlockAdded(world, chunkKey, chunkStorage, to);
+            }
         }
 
-        Optional<Region> regionOptional = plugin.getAddonManager().getRegion(location);
         if (regionOptional.isPresent()) {
             Optional<Storage> addonStorageOptional = plugin.getAddonStorage().get(regionOptional.get().getKey());
             if (addonStorageOptional.isPresent()) {
@@ -180,9 +187,29 @@ public abstract class InsightsListener extends InsightsBase implements Listener 
                     Messages.tagOf("name", limitInfo.getName()),
                     Messages.tagOf("area", area)
             ).sendTo(player);
+            if (regionOptional.isEmpty()) refreshIfOutdated(chunk, storage);
             return true;
         }
         return false;
+    }
+
+    /**
+     * Rescans the chunk in the background if its counts are older than the refresh interval.
+     * Changes made without an event (e.g. through WorldEdit) are missing from the counts, and denying a placement
+     * is where counts which are too high hurt. The placement stays denied, the next one uses the fresh counts.
+     */
+    private void refreshIfOutdated(Chunk chunk, Storage storage) {
+        long refreshIntervalMillis = plugin.getSettings().CHUNK_SCANS_REFRESH_INTERVAL_MILLIS;
+        if (refreshIntervalMillis <= 0 || storage.getAgeMillis() < refreshIntervalMillis) return;
+
+        // Tracked while scanning, so this is submitted once however many placements are denied meanwhile.
+        UUID worldUid = chunk.getWorld().getUID();
+        if (plugin.getWorldChunkScanTracker().isQueued(worldUid, ChunkUtils.getKey(chunk))) return;
+        plugin.getChunkContainerExecutor().submit(chunk)
+                .exceptionally(th -> {
+                    plugin.getLogger().log(Level.SEVERE, th, th::getMessage);
+                    return null;
+                });
     }
 
     protected void evaluateAddition(Player player, Location location, ScanObject<?> item, int delta) {

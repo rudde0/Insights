@@ -161,6 +161,8 @@ public class Messages {
         LIMIT_REACHED("limit-reached"),
         LIMIT_NOTIFICATION("limit-notification"),
         LIMIT_DISALLOWED_PLACEMENT("limit-disallowed-placement"),
+        GRACEFUL_REFUND_NOTIFICATION("graceful-refund.notification"),
+        GRACEFUL_REFUND_CHEST_NAME("graceful-refund.chest-name"),
         SCAN_START("scan.start"),
         SCAN_ALREADY_SCANNING("scan.already-scanning"),
         SCAN_FINISH_HEADER("scan.finish.header"),

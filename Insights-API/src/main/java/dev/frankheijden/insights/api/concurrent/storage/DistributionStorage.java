@@ -10,6 +10,8 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class DistributionStorage extends Distribution<ScanObject<?>> implements Storage {
 
+    private final long createdAt = System.nanoTime();
+
     public DistributionStorage() {
         this(new ConcurrentHashMap<>());
     }
@@ -62,6 +64,11 @@ public class DistributionStorage extends Distribution<ScanObject<?>> implements 
                 excess -= taken;
             }
         }
+    }
+
+    @Override
+    public long getAgeMillis() {
+        return (System.nanoTime() - createdAt) / 1_000_000L;
     }
 
     @Override

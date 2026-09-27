@@ -11,6 +11,7 @@ settings:
   chunk-scans:
     mode: "ALWAYS"
     player-tracker-interval-ticks: 5
+    refresh-interval-seconds: 30
   notification:
     type: "BOSSBAR"
     bossbar:
@@ -49,3 +50,16 @@ settings:
     aggregate-ticks: 10
     aggregate-size: 30
     block-outside-region: false
+  graceful-refund:
+    enabled: false
+    limit-file: "general.yml"
+    materials:
+      - "HOPPER"
+      - "PISTON"
+      - "STICKY_PISTON"
+      - "OBSERVER"
+    delay-ticks: 100
+    cooldown-seconds: 60
+    max-blocks-per-run: 64
+    notify-radius: 64
+    log: true

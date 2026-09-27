@@ -84,7 +84,8 @@ public class CommandInsights extends InsightsCommand {
 
     private void displayLimits(Player player) {
         String area = InsightsApi.getAreaName(player);
-        if (InsightsApi.hasData(player)) {
+        boolean hasData = InsightsApi.hasData(player);
+        if (hasData && !InsightsApi.isOutdated(player)) {
             sendLimits(player, InsightsApi.getLimits(player), area);
             return;
         }
@@ -97,13 +98,18 @@ public class CommandInsights extends InsightsCommand {
         }
 
         // Scanning one chunk costs the same as placing a single block in an unscanned chunk, and
-        // the result is cached, so repeated calls read straight from the cache. Regions are never
-        // scanned here, they may span thousands of chunks and this command is open to everyone.
+        // the result is cached, so repeated calls read straight from the cache. Outdated counts are
+        // scanned again, they may miss changes made without an event (e.g. through WorldEdit).
+        // Regions are never scanned here, they may span thousands of chunks and this command is open to everyone.
         Location location = player.getLocation();
         World world = location.getWorld();
         int chunkX = location.getBlockX() >> 4;
         int chunkZ = location.getBlockZ() >> 4;
         if (!InsightsApi.CHUNK_AREA.equals(area) || !world.isChunkLoaded(chunkX, chunkZ)) {
+            if (hasData) {
+                sendLimits(player, InsightsApi.getLimits(player), area);
+                return;
+            }
             plugin.getMessages().getMessage(Messages.Key.CHUNKLIMITS_NO_CACHE).addTemplates(
                     Messages.tagOf("area", area)
             ).sendTo(player);

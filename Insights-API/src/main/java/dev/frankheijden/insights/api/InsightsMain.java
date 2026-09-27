@@ -17,6 +17,7 @@ import dev.frankheijden.insights.api.config.Notifications;
 import dev.frankheijden.insights.api.config.Settings;
 import dev.frankheijden.insights.api.listeners.manager.InsightsListenerManager;
 import dev.frankheijden.insights.api.metrics.MetricsManager;
+import dev.frankheijden.insights.api.refund.GracefulRefund;
 import dev.frankheijden.insights.nms.core.InsightsNMS;
 
 public interface InsightsMain {
@@ -62,6 +63,8 @@ public interface InsightsMain {
     RedstoneUpdateCount getRedstoneUpdateCount();
 
     ChunkTeleport getChunkTeleport();
+
+    GracefulRefund getGracefulRefund();
 
     InsightsNMS getNMS();
 

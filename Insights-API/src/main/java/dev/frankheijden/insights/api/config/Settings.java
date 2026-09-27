@@ -4,6 +4,7 @@ import dev.frankheijden.insights.api.InsightsPlugin;
 import dev.frankheijden.insights.api.config.parser.PassiveYamlParser;
 import dev.frankheijden.insights.api.config.parser.YamlParser;
 import net.kyori.adventure.bossbar.BossBar;
+import org.bukkit.Material;
 import org.bukkit.entity.Player;
 import org.bukkit.event.Event;
 import org.bukkit.event.EventPriority;
@@ -31,6 +32,7 @@ public class Settings {
     public final int SCANS_INFO_INTERVAL_MILLIS;
     public final ChunkScanMode CHUNK_SCANS_MODE;
     public final int CHUNK_SCANS_PLAYER_TRACKER_INTERVAL_TICKS;
+    public final long CHUNK_SCANS_REFRESH_INTERVAL_MILLIS;
     public final NotificationType NOTIFICATION_TYPE;
     public final BossBar.Color NOTIFICATION_BOSSBAR_COLOR;
     public final BossBar.Overlay NOTIFICATION_BOSSBAR_OVERLAY;
@@ -53,6 +55,14 @@ public class Settings {
     public final int REDSTONE_UPDATE_AGGREGATE_TICKS;
     public final int REDSTONE_UPDATE_AGGREGATE_SIZE;
     public final boolean REDSTONE_UPDATE_LIMITER_BLOCK_OUTSIDE_REGION;
+    public final boolean GRACEFUL_REFUND_ENABLED;
+    public final String GRACEFUL_REFUND_LIMIT_FILE;
+    public final List<Material> GRACEFUL_REFUND_MATERIALS;
+    public final int GRACEFUL_REFUND_DELAY_TICKS;
+    public final int GRACEFUL_REFUND_COOLDOWN_SECONDS;
+    public final int GRACEFUL_REFUND_MAX_BLOCKS_PER_RUN;
+    public final int GRACEFUL_REFUND_NOTIFY_RADIUS;
+    public final boolean GRACEFUL_REFUND_LOG;
 
     /**
      * Constructs a new Settings object from the given YamlParser.
@@ -73,6 +83,7 @@ public class Settings {
 
         CHUNK_SCANS_MODE = parser.getEnum("settings.chunk-scans.mode", ChunkScanMode.ALWAYS);
         CHUNK_SCANS_PLAYER_TRACKER_INTERVAL_TICKS = parser.getInt("settings.chunk-scans.player-tracker-interval-ticks", 5, 1, Integer.MAX_VALUE);
+        CHUNK_SCANS_REFRESH_INTERVAL_MILLIS = parser.getInt("settings.chunk-scans.refresh-interval-seconds", 30, 0, Integer.MAX_VALUE) * 1000L;
 
         NOTIFICATION_TYPE = parser.getEnum("settings.notification.type", NotificationType.BOSSBAR);
 
@@ -123,6 +134,15 @@ public class Settings {
         REDSTONE_UPDATE_AGGREGATE_TICKS = parser.getInt("settings.redstone-update-limiter.aggregate-ticks", 10, 1, 20 * 60 * 60);
         REDSTONE_UPDATE_AGGREGATE_SIZE = parser.getInt("settings.redstone-update-limiter.aggregate-size", 30, 1, 20 * 60 * 60) + 1;
         REDSTONE_UPDATE_LIMITER_BLOCK_OUTSIDE_REGION = parser.getBoolean("settings.redstone-update-limiter.block-outside-region", false);
+
+        GRACEFUL_REFUND_ENABLED = parser.getBoolean("settings.graceful-refund.enabled", false);
+        GRACEFUL_REFUND_LIMIT_FILE = parser.getString("settings.graceful-refund.limit-file", "general.yml");
+        GRACEFUL_REFUND_MATERIALS = parser.getEnums("settings.graceful-refund.materials", Material.class, "material");
+        GRACEFUL_REFUND_DELAY_TICKS = parser.getInt("settings.graceful-refund.delay-ticks", 100, 1, 20 * 60 * 60);
+        GRACEFUL_REFUND_COOLDOWN_SECONDS = parser.getInt("settings.graceful-refund.cooldown-seconds", 60, 1, Integer.MAX_VALUE);
+        GRACEFUL_REFUND_MAX_BLOCKS_PER_RUN = parser.getInt("settings.graceful-refund.max-blocks-per-run", 64, 1, 4096);
+        GRACEFUL_REFUND_NOTIFY_RADIUS = parser.getInt("settings.graceful-refund.notify-radius", 64, 0, 1024);
+        GRACEFUL_REFUND_LOG = parser.getBoolean("settings.graceful-refund.log", true);
     }
 
     /**

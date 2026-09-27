@@ -21,6 +21,7 @@ import dev.frankheijden.insights.api.config.limits.Limit;
 import dev.frankheijden.insights.api.config.parser.YamlParseException;
 import dev.frankheijden.insights.api.metrics.MetricsManager;
 import dev.frankheijden.insights.api.objects.wrappers.ScanObject;
+import dev.frankheijden.insights.api.refund.GracefulRefund;
 import dev.frankheijden.insights.api.tasks.UpdateCheckerTask;
 import dev.frankheijden.insights.api.utils.IOUtils;
 import dev.frankheijden.insights.api.utils.VersionUtils;
@@ -70,7 +71,7 @@ public class Insights extends InsightsPlugin {
     private Settings settings;
     private Messages messages = null;
     private Notifications notifications;
-    private Limits limits;
+    private volatile Limits limits;
     private AddonManager addonManager;
     private ContainerExecutorService executor;
     private ChunkContainerExecutor chunkContainerExecutor;
@@ -87,6 +88,7 @@ public class Insights extends InsightsPlugin {
     private ScheduledTask updateChecker = null;
     private RedstoneUpdateCount redstoneUpdateCount = null;
     private ChunkTeleport chunkTeleport;
+    private GracefulRefund gracefulRefund;
     private InsightsNMS nms;
 
     @Override
@@ -138,6 +140,7 @@ public class Insights extends InsightsPlugin {
         redstoneUpdateCount = new RedstoneUpdateCount(this);
         redstoneUpdateCount.start();
         chunkTeleport = new ChunkTeleport(this);
+        gracefulRefund = new GracefulRefund(this);
 
         loadCommands();
 
@@ -179,6 +182,11 @@ public class Insights extends InsightsPlugin {
     }
 
     @Override
+    public GracefulRefund getGracefulRefund() {
+        return gracefulRefund;
+    }
+
+    @Override
     public InsightsNMS getNMS() {
         return nms;
     }
@@ -213,7 +221,8 @@ public class Insights extends InsightsPlugin {
 
     @Override
     public void reloadLimits() {
-        limits = new Limits();
+        // Published once complete: limits are read from other threads while they load.
+        Limits limits = new Limits();
 
         Path limitsPath = getDataFolder().toPath().resolve(LIMITS_FOLDER_NAME);
         if (!Files.exists(limitsPath)) {
@@ -245,6 +254,7 @@ public class Insights extends InsightsPlugin {
         } catch (IOException ex) {
             ex.printStackTrace();
         }
+        this.limits = limits;
     }
 
     private void loadCommands() {

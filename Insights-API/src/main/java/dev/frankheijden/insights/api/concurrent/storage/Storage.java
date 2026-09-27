@@ -58,6 +58,14 @@ public interface Storage {
 
     void modify(ScanObject<?> item, long amount);
 
+    /**
+     * Returns how long ago the counts of this storage were scanned, in milliseconds.
+     * Every modification since was tracked through events, changes made without one (e.g. WorldEdit) are missing.
+     */
+    default long getAgeMillis() {
+        return 0;
+    }
+
     void mergeRight(Distribution<ScanObject<?>> target);
 
 }
