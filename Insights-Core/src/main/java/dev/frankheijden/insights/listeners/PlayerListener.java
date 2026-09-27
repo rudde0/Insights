@@ -49,9 +49,17 @@ public class PlayerListener extends InsightsListener {
         }
     }
 
+    /**
+     * Handles the PlayerQuitEvent, releasing everything we cached for this player.
+     * The notification caches hold onto boss bars and player references, so leaving them
+     * behind leaks a little memory for every player that ever joined.
+     */
     @EventHandler(priority = EventPriority.MONITOR)
     public void onPlayerQuit(PlayerQuitEvent event) {
-        plugin.getPlayerList().removePlayer(event.getPlayer());
+        Player player = event.getPlayer();
+        plugin.getPlayerList().removePlayer(player);
+        plugin.getNotifications().clearNotifications(player.getUniqueId());
+        plugin.getScanHistory().removeHistory(player.getUniqueId());
     }
 
     /**

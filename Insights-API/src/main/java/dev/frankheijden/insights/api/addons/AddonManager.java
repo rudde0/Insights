@@ -182,13 +182,18 @@ public class AddonManager {
      * If the plugin of the addon unloaded, this method will also remove the addon.
      */
     public Optional<Region> getRegion(Location location) {
-        List<String> addonsToRemove = new ArrayList<>();
+        // This is called for every block modification, so the (very common) case of having
+        // no addons at all must not allocate anything.
+        if (addons.isEmpty()) return Optional.empty();
+
+        List<String> addonsToRemove = null;
         Optional<Region> regionOptional = Optional.empty();
 
         for (InsightsAddon addon : addons.values()) {
             var pluginName = addon.getPluginName();
             if (!plugin.isAvailable(pluginName)) {
-                addonsToRemove.add(addon.getPluginName());
+                if (addonsToRemove == null) addonsToRemove = new ArrayList<>(1);
+                addonsToRemove.add(pluginName);
                 continue;
             }
 
@@ -198,11 +203,13 @@ public class AddonManager {
             }
         }
 
-        for (String pluginName : addonsToRemove) {
-            InsightsAddon addon = unregisterAddon(pluginName);
-            if (addon != null) {
-                plugin.getLogger().warning("Unloaded addon '" + addon.getPluginName() + "' v" + addon.getVersion()
-                        + ", because the plugin disappeared.");
+        if (addonsToRemove != null) {
+            for (String pluginName : addonsToRemove) {
+                InsightsAddon addon = unregisterAddon(pluginName);
+                if (addon != null) {
+                    plugin.getLogger().warning("Unloaded addon '" + addon.getPluginName() + "' v" + addon.getVersion()
+                            + ", because the plugin disappeared.");
+                }
             }
         }
 

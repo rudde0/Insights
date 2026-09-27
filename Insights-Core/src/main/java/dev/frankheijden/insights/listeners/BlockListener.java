@@ -348,17 +348,22 @@ public class BlockListener extends InsightsListener {
     private void handlePistonEvent(BlockPistonEvent event, List<Block> blocks) {
         if (blocks.isEmpty()) return;
 
+        // The blocks are kept for the delayed check: the event's list builds a new Block (same world and
+        // position) on every get(), which the delayed check would otherwise do again for every block.
+        var movedBlocks = new Block[blocks.size()];
         var materials = new Material[blocks.size()];
         for (var i = 0; i < blocks.size(); i++) {
             var block = blocks.get(i);
             var material = block.getType();
             handleModification(block.getLocation(), material, -1);
+            movedBlocks[i] = block;
             materials[i] = material;
         }
 
+        var direction = event.getDirection();
         plugin.getServer().getRegionScheduler().runDelayed(plugin, event.getBlock().getLocation(), (scheduledTask) -> {
-            for (var i = 0; i < blocks.size(); i++) {
-                var relative = blocks.get(i).getRelative(event.getDirection());
+            for (var i = 0; i < movedBlocks.length; i++) {
+                var relative = movedBlocks[i].getRelative(direction);
                 var material = relative.getType();
                 if (materials[i] == material) {
                     handleModification(relative.getLocation(), material, 1);
@@ -374,7 +379,15 @@ public class BlockListener extends InsightsListener {
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onBlockSpread(BlockSpreadEvent event) {
         var block = event.getBlock();
-        handleModification(block.getLocation(), block.getType(), event.getNewState().getType(), 1);
+        var newMaterial = event.getNewState().getType();
+        handleModification(block.getLocation(), block.getType(), newMaterial, 1);
+
+        // A bamboo sapling turns into bamboo once the first stalk grows on top of it,
+        // which happens through a block update that does not fire an event of its own.
+        var source = event.getSource();
+        if (source.getType() == Material.BAMBOO_SAPLING && newMaterial == Material.BAMBOO) {
+            handleModification(source.getLocation(), Material.BAMBOO_SAPLING, Material.BAMBOO, 1);
+        }
     }
 
     /**

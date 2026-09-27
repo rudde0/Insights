@@ -81,6 +81,21 @@ public class Notifications {
     }
 
     /**
+     * Clears the notifications of a single player, removing them from the caches.
+     */
+    public void clearNotifications(UUID uuid) {
+        Cache<Notification> cache = notificationMap.remove(uuid);
+        if (cache != null) {
+            cache.getNotification().clear();
+        }
+
+        Cache<ProgressNotification> progressCache = progressNotificationMap.remove(uuid);
+        if (progressCache != null) {
+            progressCache.getNotification().clear();
+        }
+    }
+
+    /**
      * Clears all notifications.
      */
     public void clearNotifications() {

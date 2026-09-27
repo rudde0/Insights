@@ -1,12 +1,10 @@
 package dev.frankheijden.insights.api.concurrent.containers;
 
-import dev.frankheijden.insights.api.InsightsPlugin;
 import dev.frankheijden.insights.api.concurrent.ScanOptions;
 import dev.frankheijden.insights.api.objects.chunk.ChunkCuboid;
 import dev.frankheijden.insights.nms.core.ChunkEntity;
 import dev.frankheijden.insights.nms.core.ChunkSection;
 import dev.frankheijden.insights.nms.core.InsightsNMS;
-import org.bukkit.Bukkit;
 import org.bukkit.Chunk;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;

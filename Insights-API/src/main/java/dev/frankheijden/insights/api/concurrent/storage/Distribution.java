@@ -50,8 +50,10 @@ public class Distribution<E> {
     public void modify(E item, long amount) {
         if (item == null) return;
         distributionMap.compute(item, (e, count) -> {
-            if (count == null) count = 0L;
-            return Math.max(0, count + amount);
+            long newCount = (count == null ? 0L : count) + amount;
+            // Drop the entry entirely once it hits zero, a lookup of an absent key counts as 0 anyway.
+            // Without this, every material that ever existed in an area sticks around forever.
+            return newCount <= 0 ? null : newCount;
         });
     }
 
