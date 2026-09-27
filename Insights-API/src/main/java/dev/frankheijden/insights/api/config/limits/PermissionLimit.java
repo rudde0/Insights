@@ -4,11 +4,14 @@ import dev.frankheijden.insights.api.concurrent.ScanOptions;
 import dev.frankheijden.insights.api.config.parser.YamlParseException;
 import dev.frankheijden.insights.api.config.parser.YamlParser;
 import dev.frankheijden.insights.api.objects.wrappers.ScanObject;
+import dev.frankheijden.insights.api.util.MaterialVariants;
 import dev.frankheijden.insights.api.utils.EnumUtils;
 import org.bukkit.Material;
 import org.bukkit.entity.EntityType;
 import java.util.Collections;
 import java.util.EnumMap;
+import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 
@@ -19,11 +22,40 @@ public class PermissionLimit extends Limit {
     private final Set<ScanObject<?>> scanObjects;
     private final ScanOptions scanOptions;
 
+    // Variants which are not configured themselves share the limit of their block (e.g. bamboo saplings
+    // fall under bamboo), and the block and its variants are counted together.
+    private final Map<Material, Material> variantMaterials;
+    private final Set<Material> limitedMaterials;
+    private final Map<ScanObject<?>, Set<ScanObject<?>>> countedScanObjects;
+
     protected PermissionLimit(Info info, Map<Material, Integer> materials, Map<EntityType, Integer> entities) {
         super(LimitType.PERMISSION, info);
         this.materials = Collections.unmodifiableMap(materials);
         this.entities = Collections.unmodifiableMap(entities);
         this.scanObjects = Collections.unmodifiableSet(ScanObject.of(materials.keySet(), entities.keySet()));
+
+        Map<Material, Material> variantMaterials = new EnumMap<>(Material.class);
+        Map<ScanObject<?>, Set<ScanObject<?>>> countedScanObjects = new HashMap<>();
+        for (Material material : materials.keySet()) {
+            Set<Material> counted = EnumSet.of(material);
+            for (Material variant : MaterialVariants.getVariants(material)) {
+                if (materials.containsKey(variant)) continue;
+                variantMaterials.put(variant, material);
+                counted.add(variant);
+            }
+            if (counted.size() == 1) continue;
+
+            Set<ScanObject<?>> countedObjects = Collections.unmodifiableSet(
+                    ScanObject.of(counted, Collections.emptySet())
+            );
+            for (Material m : counted) {
+                countedScanObjects.put(ScanObject.of(m), countedObjects);
+            }
+        }
+
+        this.variantMaterials = Collections.unmodifiableMap(variantMaterials);
+        this.countedScanObjects = Collections.unmodifiableMap(countedScanObjects);
+        this.limitedMaterials = Collections.unmodifiableSet(MaterialVariants.withVariants(materials.keySet()));
         this.scanOptions = determineScanOptions();
     }
 
@@ -52,7 +84,8 @@ public class PermissionLimit extends Limit {
 
     @Override
     public LimitInfo getLimit(Material m) {
-        return new LimitInfo(EnumUtils.pretty(m), materials.getOrDefault(m, -1));
+        Material limited = variantMaterials.getOrDefault(m, m);
+        return new LimitInfo(EnumUtils.pretty(limited), materials.getOrDefault(limited, -1));
     }
 
     @Override
@@ -60,9 +93,12 @@ public class PermissionLimit extends Limit {
         return new LimitInfo(EnumUtils.pretty(e), entities.getOrDefault(e, -1));
     }
 
+    /**
+     * Returns the materials this limit applies to, including variants sharing the limit of their block.
+     */
     @Override
     public Set<Material> getMaterials() {
-        return materials.keySet();
+        return limitedMaterials;
     }
 
     public Set<EntityType> getEntities() {
@@ -72,6 +108,15 @@ public class PermissionLimit extends Limit {
     @Override
     public Set<? extends ScanObject<?>> getScanObjects() {
         return scanObjects;
+    }
+
+    /**
+     * Each material/entity has its own limit, only a block and its variants are counted together.
+     */
+    @Override
+    public Set<? extends ScanObject<?>> getScanObjects(ScanObject<?> item) {
+        Set<ScanObject<?>> counted = countedScanObjects.get(item);
+        return counted == null ? Collections.singleton(item) : counted;
     }
 
     @Override

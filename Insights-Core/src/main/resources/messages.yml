@@ -29,6 +29,14 @@ messages:
       format: "<aqua> <entry><dark_gray>: <gray><bold><count>"
       footer: |-
         <dark_aqua> Cached result from this <aqua><area><dark_aqua>.
+  chunklimits:
+    no-limits: "<prefix><dark_aqua>No limits apply to you in this <aqua><area><dark_aqua>."
+    no-cache: "<prefix><red>There is no data available for this <area> yet!"
+    result:
+      header: "<dark_gray><strikethrough>--------------=<reset><dark_gray>[<aqua><bold> Insights Limits<reset> <dark_gray>]<strikethrough>=--------------"
+      format: "<aqua> <name><dark_gray>: <usage-color><count><dark_gray>/<gray><limit> <dark_gray>(<usage-color><percentage>%<dark_gray>)"
+      footer: |-
+        <dark_aqua> Limits which apply to you in this <aqua><area><dark_aqua>.
   stats: |-
     <dark_gray><strikethrough>---------------=<reset><dark_gray>[<aqua><bold> Insights Stats<reset> <dark_gray>]<strikethrough>=---------------
     <dark_aqua> Chunks Scanned<dark_gray>: <aqua><bold><chunks_scanned></bold>

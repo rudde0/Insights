@@ -80,6 +80,24 @@ public class Messages {
         );
     }
 
+    /**
+     * Creates a paginated message from elements which are formatted by the given function.
+     */
+    public <T> PaginatedMessage<T> createPaginatedMessage(
+            Message header,
+            Message footer,
+            T[] elements,
+            Function<T, Component> elementFormatFunction
+    ) {
+        return new PaginatedMessage<>(
+                header,
+                footer,
+                elements,
+                elementFormatFunction,
+                plugin.getSettings().PAGINATION_RESULTS_PER_PAGE
+        );
+    }
+
     private <T> Component addHover(Component component, T element, Component displayName) {
         if (element instanceof ScanObject<?> scanObject) {
             Object obj = scanObject.getObject();
@@ -158,6 +176,11 @@ public class Messages {
         SCANCACHE_RESULT_FORMAT("scancache.result.format"),
         SCANCACHE_RESULT_FOOTER("scancache.result.footer"),
         SCANHISTORY_NO_HISTORY("scanhistory.no-history"),
+        CHUNKLIMITS_NO_LIMITS("chunklimits.no-limits"),
+        CHUNKLIMITS_NO_CACHE("chunklimits.no-cache"),
+        CHUNKLIMITS_RESULT_HEADER("chunklimits.result.header"),
+        CHUNKLIMITS_RESULT_FORMAT("chunklimits.result.format"),
+        CHUNKLIMITS_RESULT_FOOTER("chunklimits.result.footer"),
         PAGINATION_BUTTON_LEFT("pagination.button-left"),
         PAGINATION_BUTTON_RIGHT("pagination.button-right"),
         PAGINATION_BUTTON_COLOR_ACTIVE("pagination.button-color-active"),
@@ -337,25 +360,25 @@ public class Messages {
         }
 
         private Component createButton(int page, ButtonType type) {
-            var button = Component.empty().toBuilder();
+            boolean inactive = (type == ButtonType.LEFT && page == 0)
+                    || (type == ButtonType.RIGHT && page == getPageAmount() - 1);
+            Key buttonColor = inactive
+                    ? Key.PAGINATION_BUTTON_COLOR_INACTIVE
+                    : Key.PAGINATION_BUTTON_COLOR_ACTIVE;
 
-            Key buttonColor;
-            if ((type == ButtonType.LEFT && page == 0) || (type == ButtonType.RIGHT && page == getPageAmount() - 1)) {
-                buttonColor = Key.PAGINATION_BUTTON_COLOR_INACTIVE;
-            } else {
-                buttonColor = Key.PAGINATION_BUTTON_COLOR_ACTIVE;
+            // Built without a ComponentBuilder on purpose. TextComponent#toBuilder() is a covariant
+            // override whose descriptor differs between adventure versions, so calling it throws
+            // NoSuchMethodError whenever the server ships a different adventure than we compiled on.
+            Component button = miniMessage.deserialize(getRawMessage(buttonColor) + getRawMessage(type.key));
+            if (inactive) return button;
 
-                int clickPage = type == ButtonType.LEFT ? page : page + 2;
-                button.hoverEvent(HoverEvent.showText(miniMessage.deserialize(
-                        getRawMessage(Key.PAGINATION_BUTTON_HOVER),
-                        tagOf("page", clickPage)
-                )));
-                button.clickEvent(ClickEvent.runCommand("/scanhistory " + clickPage));
-            }
-
-            button.append(miniMessage.deserialize(getRawMessage(buttonColor) + getRawMessage(type.key)));
-
-            return button.build();
+            int clickPage = type == ButtonType.LEFT ? page : page + 2;
+            return button
+                    .hoverEvent(HoverEvent.showText(miniMessage.deserialize(
+                            getRawMessage(Key.PAGINATION_BUTTON_HOVER),
+                            tagOf("page", clickPage)
+                    )))
+                    .clickEvent(ClickEvent.runCommand("/scanhistory " + clickPage));
         }
 
         /**
@@ -382,7 +405,13 @@ public class Messages {
             header.sendTo(sender);
             components.forEach(sender::sendMessage);
             footer.sendTo(sender);
-            sender.sendMessage(createFooter(page));
+
+            // The page navigation is only worth sending when there is somewhere to navigate to.
+            // Its buttons run /scanhistory on click, which recent clients guard behind a
+            // "Confirm Command Execution" prompt, so don't put one in front of a single page.
+            if (getPageAmount() > 1) {
+                sender.sendMessage(createFooter(page));
+            }
         }
     }
 }
