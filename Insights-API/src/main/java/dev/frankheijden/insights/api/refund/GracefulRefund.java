@@ -13,6 +13,7 @@ import org.bukkit.plugin.IllegalPluginAccessException;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 /**
@@ -25,16 +26,22 @@ import java.util.logging.Level;
  * the world again, on the thread owning the chunk, right before removing anything. Only blocks which are
  * verifiably there count, blocks placed since are not included, so what is counted can only be lower than what
  * really is there, and the chunk never ends up below its limit.</p>
+ *
+ * <p>The work on the main thread is kept small and spread out: at most one chunk is looked at per tick
+ * (server-wide), and a run removes at most max-blocks-per-run blocks, continuing with the rest shortly after.</p>
  */
 public class GracefulRefund {
 
     private static final int PRUNE_THRESHOLD = 1024;
     private static final long PENDING_TIMEOUT_MILLIS = 10 * 60 * 1000L;
+    private static final long TICK_MILLIS = 50;
 
     private final InsightsPlugin plugin;
     private final NamespacedKey chestKey;
     private final Map<ChunkId, Long> pending = new ConcurrentHashMap<>();
     private final Map<ChunkId, Long> lastRuns = new ConcurrentHashMap<>();
+    private final Map<ChunkId, Integer> chests = new ConcurrentHashMap<>();
+    private final AtomicLong nextSlotMillis = new AtomicLong();
     private volatile RefundConfig config = null;
 
     public GracefulRefund(InsightsPlugin plugin) {
@@ -52,7 +59,7 @@ public class GracefulRefund {
 
             for (RefundGroup group : cfg.groups()) {
                 if (storage.count(cfg.limit(), group.scanObject()) > group.limit()) {
-                    flag(cfg, world, chunkKey);
+                    flag(cfg, world, chunkKey, false);
                     return;
                 }
             }
@@ -73,7 +80,7 @@ public class GracefulRefund {
 
             RefundGroup group = cfg.group(material);
             if (group != null && cfg.appliesTo(world) && storage.count(cfg.limit(), group.scanObject()) > group.limit()) {
-                flag(cfg, world, chunkKey);
+                flag(cfg, world, chunkKey, false);
             }
         } catch (RuntimeException ex) {
             // Never let this get in the way of the event which changed the block.
@@ -85,8 +92,10 @@ public class GracefulRefund {
      * Forgets about a chunk which unloaded.
      */
     public void onChunkUnload(World world, long chunkKey) {
-        if (!lastRuns.isEmpty()) {
-            lastRuns.remove(new ChunkId(world.getUID(), chunkKey));
+        if (!lastRuns.isEmpty() || !chests.isEmpty()) {
+            ChunkId id = new ChunkId(world.getUID(), chunkKey);
+            lastRuns.remove(id);
+            chests.remove(id);
         }
     }
 
@@ -122,25 +131,42 @@ public class GracefulRefund {
         return cfg.isEnabled() ? cfg : null;
     }
 
-    private void flag(RefundConfig cfg, World world, long chunkKey) {
+    /**
+     * Schedules a look at the chunk. A chunk is looked at no more than once per cooldown, unless the previous run
+     * removed blocks and is continued (a large refund is split into several runs).
+     */
+    private void flag(RefundConfig cfg, World world, long chunkKey, boolean continuation) {
         ChunkId id = new ChunkId(world.getUID(), chunkKey);
         long now = System.currentTimeMillis();
-        Long pendingSince = pending.putIfAbsent(id, now);
-        if (pendingSince != null) {
-            // Already on its way. Unless it got lost, a scheduler may drop the task of a chunk which unloaded.
-            long timeoutMillis = PENDING_TIMEOUT_MILLIS + cfg.cooldownMillis() + cfg.delayTicks() * 50L;
-            if (now - pendingSince < timeoutMillis || !pending.replace(id, pendingSince, now)) return;
-        }
+
+        // Already on its way, unless it got lost: a scheduler may drop the task of a chunk which unloaded.
+        Long pendingSlot = pending.get(id);
+        if (pendingSlot != null && now - pendingSlot < PENDING_TIMEOUT_MILLIS) return;
 
         // Waiting a bit lets a burst of changes settle, and a chunk is handled at most once per cooldown.
-        long delayTicks = cfg.delayTicks();
+        long delayMillis = cfg.delayTicks() * TICK_MILLIS;
         Long lastRun = lastRuns.get(id);
-        if (lastRun != null) {
-            long cooldownLeftMillis = lastRun + cfg.cooldownMillis() - now;
-            delayTicks = Math.max(delayTicks, (cooldownLeftMillis + 49) / 50);
+        if (lastRun != null && !continuation) {
+            delayMillis = Math.max(delayMillis, lastRun + cfg.cooldownMillis() - now);
         }
+
+        // Every chunk gets a tick of its own, so a burst of flagged chunks (e.g. after scanning many chunks at once)
+        // is handled one chunk per tick instead of all at once. Slots only ever increase, so they also identify
+        // this scheduling of the chunk.
+        long slot = nextSlotMillis.accumulateAndGet(
+                now + delayMillis,
+                (previousSlot, requested) -> Math.max(previousSlot + TICK_MILLIS, requested)
+        );
+        boolean claimed = pendingSlot == null
+                ? pending.putIfAbsent(id, slot) == null
+                : pending.replace(id, pendingSlot, slot);
+        if (!claimed) return;
+
         if (lastRuns.size() > PRUNE_THRESHOLD) {
             lastRuns.values().removeIf(time -> now - time >= cfg.cooldownMillis());
+        }
+        if (chests.size() > PRUNE_THRESHOLD) {
+            chests.keySet().removeIf(chunk -> !lastRuns.containsKey(chunk));
         }
 
         try {
@@ -149,19 +175,19 @@ public class GracefulRefund {
                     world,
                     id.chunkX(),
                     id.chunkZ(),
-                    task -> snapshot(id, now),
-                    delayTicks
+                    task -> snapshot(id, slot),
+                    Math.max(1, (slot - now + TICK_MILLIS - 1) / TICK_MILLIS)
             );
         } catch (IllegalPluginAccessException ex) {
             // Insights is being disabled.
-            pending.remove(id, now);
+            pending.remove(id, slot);
         }
     }
 
     /**
      * Takes a snapshot of the chunk, runs on the thread owning the chunk.
      */
-    private void snapshot(ChunkId id, long since) {
+    private void snapshot(ChunkId id, long slot) {
         boolean searching = false;
         boolean examined = false;
         try {
@@ -173,20 +199,21 @@ public class GracefulRefund {
             if (!world.isChunkLoaded(id.chunkX(), id.chunkZ())) return;
 
             examined = true;
-            ChunkSnapshot snapshot = world.getChunkAt(id.chunkX(), id.chunkZ()).getChunkSnapshot(false, false, false);
+            // Only the blocks are copied, and only of sections which are not empty: no light, biomes nor heightmaps.
+            ChunkSnapshot snapshot = world.getChunkAt(id.chunkX(), id.chunkZ()).getChunkSnapshot(false, false, false, false);
             int minY = world.getMinHeight();
             int maxY = world.getMaxHeight();
-            plugin.getServer().getAsyncScheduler().runNow(plugin, task -> search(id, since, cfg, snapshot, minY, maxY));
+            plugin.getServer().getAsyncScheduler().runNow(plugin, task -> search(id, slot, cfg, snapshot, minY, maxY));
             searching = true;
         } finally {
-            if (!searching) done(id, since, examined);
+            if (!searching) done(id, slot, examined);
         }
     }
 
     /**
      * Searches the snapshot for the refunded materials, runs off the main thread.
      */
-    private void search(ChunkId id, long since, RefundConfig cfg, ChunkSnapshot snapshot, int minY, int maxY) {
+    private void search(ChunkId id, long slot, RefundConfig cfg, ChunkSnapshot snapshot, int minY, int maxY) {
         boolean refunding = false;
         try {
             int[][] found = find(cfg, snapshot, minY, maxY);
@@ -209,7 +236,7 @@ public class GracefulRefund {
                     world,
                     id.chunkX(),
                     id.chunkZ(),
-                    task -> refund(id, since, cfg, found, minY, maxY, outdated)
+                    task -> refund(id, slot, cfg, found, minY, maxY, outdated)
             );
             refunding = true;
         } catch (IllegalPluginAccessException ex) {
@@ -217,7 +244,7 @@ public class GracefulRefund {
         } catch (RuntimeException ex) {
             plugin.getLogger().log(Level.SEVERE, "Graceful refund failed to search chunk " + id, ex);
         } finally {
-            if (!refunding) done(id, since, true);
+            if (!refunding) done(id, slot, true);
         }
     }
 
@@ -272,7 +299,7 @@ public class GracefulRefund {
     /**
      * Removes the blocks beyond the limit, runs on the thread owning the chunk.
      */
-    private void refund(ChunkId id, long since, RefundConfig cfg, int[][] found, int minY, int maxY, boolean outdated) {
+    private void refund(ChunkId id, long slot, RefundConfig cfg, int[][] found, int minY, int maxY, boolean outdated) {
         World world = plugin.getServer().getWorld(id.worldUid());
         boolean again = false;
         try {
@@ -280,13 +307,18 @@ public class GracefulRefund {
             if (world == null || getConfig() != cfg) return;
             if (!world.isChunkLoaded(id.chunkX(), id.chunkZ())) return;
 
-            again = new RefundRun(this, cfg, world, id.chunkX(), id.chunkZ(), minY, maxY, found).run();
+            int rememberedChest = chests.getOrDefault(id, -1);
+            RefundRun.Result result = new RefundRun(this, cfg, world, id.chunkX(), id.chunkZ(), minY, maxY, found, rememberedChest).run();
+            if (result.chest() >= 0) {
+                chests.put(id, result.chest());
+            }
+            again = result.again();
 
             // Rescanned after the removals, so the fresh counts include them.
             if (outdated) refresh(world, id);
         } finally {
-            done(id, since, true);
-            if (again) flag(cfg, world, id.chunkKey());
+            done(id, slot, true);
+            if (again) flag(cfg, world, id.chunkKey(), true);
         }
     }
 
@@ -299,10 +331,10 @@ public class GracefulRefund {
         }
     }
 
-    private void done(ChunkId id, long since, boolean examined) {
+    private void done(ChunkId id, long slot, boolean examined) {
         if (examined) {
             lastRuns.put(id, System.currentTimeMillis());
         }
-        pending.remove(id, since);
+        pending.remove(id, slot);
     }
 }

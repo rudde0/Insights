@@ -140,7 +140,7 @@ public class Settings {
         GRACEFUL_REFUND_MATERIALS = parser.getEnums("settings.graceful-refund.materials", Material.class, "material");
         GRACEFUL_REFUND_DELAY_TICKS = parser.getInt("settings.graceful-refund.delay-ticks", 100, 1, 20 * 60 * 60);
         GRACEFUL_REFUND_COOLDOWN_SECONDS = parser.getInt("settings.graceful-refund.cooldown-seconds", 60, 1, Integer.MAX_VALUE);
-        GRACEFUL_REFUND_MAX_BLOCKS_PER_RUN = parser.getInt("settings.graceful-refund.max-blocks-per-run", 64, 1, 4096);
+        GRACEFUL_REFUND_MAX_BLOCKS_PER_RUN = parser.getInt("settings.graceful-refund.max-blocks-per-run", 16, 1, 4096);
         GRACEFUL_REFUND_NOTIFY_RADIUS = parser.getInt("settings.graceful-refund.notify-radius", 64, 0, 1024);
         GRACEFUL_REFUND_LOG = parser.getBoolean("settings.graceful-refund.log", true);
     }

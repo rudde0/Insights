@@ -60,6 +60,6 @@ settings:
       - "OBSERVER"
     delay-ticks: 100
     cooldown-seconds: 60
-    max-blocks-per-run: 64
+    max-blocks-per-run: 16
     notify-radius: 64
     log: true

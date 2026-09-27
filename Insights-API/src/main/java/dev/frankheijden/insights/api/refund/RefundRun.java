@@ -61,6 +61,7 @@ final class RefundRun {
     private final int minY;
     private final int maxY;
     private final int[][] found;
+    private final int rememberedChest;
 
     RefundRun(
             GracefulRefund refund,
@@ -70,7 +71,8 @@ final class RefundRun {
             int chunkZ,
             int minY,
             int maxY,
-            int[][] found
+            int[][] found,
+            int rememberedChest
     ) {
         this.refund = refund;
         this.plugin = refund.getPlugin();
@@ -81,14 +83,13 @@ final class RefundRun {
         this.minY = minY;
         this.maxY = maxY;
         this.found = found;
+        this.rememberedChest = rememberedChest;
     }
 
     /**
      * Removes the blocks beyond the limit and hands them back in a chest.
-     *
-     * @return whether blocks were removed while more remain beyond the limit, i.e. whether to run again.
      */
-    boolean run() {
+    Result run() {
         RefundGroup[] groups = cfg.groups();
         int[] excess = new int[groups.length];
         List<List<Block>> candidates = new ArrayList<>(groups.length);
@@ -100,16 +101,16 @@ final class RefundRun {
             candidates.add(groupExcess > 0 ? removable(group, verified) : List.of());
             exceeded |= groupExcess > 0;
         }
-        if (!exceeded) return false;
+        if (!exceeded) return Result.NOTHING;
 
-        // Refunds go into a chest of an earlier refund in this chunk if it has room, or else into a new chest.
+        // Refunds go into the chest of the previous refund in this chunk if it has room, or else into a new chest.
         Chest existingChest = findRefundChest();
         List<Planned> plan = existingChest == null ? List.of() : plan(candidates, excess, existingChest.getBlockInventory());
         Block spot = null;
         if (plan.isEmpty()) {
             existingChest = null;
             plan = plan(candidates, excess, null);
-            if (plan.isEmpty()) return false;
+            if (plan.isEmpty()) return Result.NOTHING;
 
             spot = findSpot(plan);
             if (spot == null) {
@@ -117,7 +118,7 @@ final class RefundRun {
                     plugin.getLogger().warning("Graceful refund: chunk " + chunkX + ", " + chunkZ + " in '"
                             + world.getName() + "' holds more than allowed, but there is no room for a chest.");
                 }
-                return false;
+                return Result.NOTHING;
             }
         }
 
@@ -134,17 +135,25 @@ final class RefundRun {
 
         List<Block> verified = new ArrayList<>(positions.length);
         for (int position : positions) {
-            Block block = world.getBlockAt(
-                    (chunkX << 4) + BlockPositions.localX(position),
-                    minY + BlockPositions.relativeY(position),
-                    (chunkZ << 4) + BlockPositions.localZ(position)
-            );
+            Block block = blockAt(position);
             // Regions of addons are limited as a whole, the limit of a chunk does not apply to them.
             if (group.contains(block.getType()) && !isInRegion(block)) {
                 verified.add(block);
             }
         }
         return verified;
+    }
+
+    private Block blockAt(int position) {
+        return world.getBlockAt(
+                (chunkX << 4) + BlockPositions.localX(position),
+                minY + BlockPositions.relativeY(position),
+                (chunkZ << 4) + BlockPositions.localZ(position)
+        );
+    }
+
+    private int positionOf(Block block) {
+        return BlockPositions.pack(block.getX(), block.getY() - minY, block.getZ());
     }
 
     /**
@@ -173,23 +182,24 @@ final class RefundRun {
         return plugin.getAddonManager().getRegion(block.getLocation()).isPresent();
     }
 
+    /**
+     * Returns the chest of the previous refund in this chunk if it is still there and has room.
+     * Only its remembered position is looked at, the chunk is not searched for it.
+     */
     private Chest findRefundChest() {
-        var chunk = world.getChunkAt(chunkX, chunkZ);
-        for (BlockState state : chunk.getTileEntities(block -> block.getType() == Material.CHEST, false)) {
-            if (state instanceof Chest chest
-                    && chest.getPersistentDataContainer().has(refund.getChestKey(), PersistentDataType.BYTE)
-                    && chest.getBlockInventory().firstEmpty() >= 0) {
-                return chest;
-            }
-        }
-        return null;
+        if (rememberedChest < 0) return null;
+
+        Block block = blockAt(rememberedChest);
+        if (block.getType() != Material.CHEST || !(block.getState(false) instanceof Chest chest)) return null;
+        if (!chest.getPersistentDataContainer().has(refund.getChestKey(), PersistentDataType.BYTE)) return null;
+        return chest.getBlockInventory().firstEmpty() >= 0 ? chest : null;
     }
 
     /**
      * Picks the blocks to remove, as many as fit into the chest (a new one if null).
      */
     private List<Planned> plan(List<List<Block>> candidates, int[] excess, Inventory chestInventory) {
-        Inventory simulation = copyOf(chestInventory);
+        ChestSpace space = new ChestSpace(chestInventory);
         List<Planned> plan = new ArrayList<>();
         for (RefundGroup group : cfg.groups()) {
             int planned = 0;
@@ -198,9 +208,8 @@ final class RefundRun {
 
                 List<ItemStack> items = refundItems(block, group);
                 if (items == null) continue;
-                if (!fits(simulation, items)) return plan;
+                if (!space.reserve(items)) return plan;
 
-                simulation.addItem(copyOf(items));
                 plan.add(new Planned(block, group));
                 planned++;
             }
@@ -269,21 +278,21 @@ final class RefundRun {
         return type == Material.AIR || type == Material.CAVE_AIR;
     }
 
-    private boolean execute(List<Planned> plan, int[] excess, Chest existingChest, Block spot) {
+    private Result execute(List<Planned> plan, int[] excess, Chest existingChest, Block spot) {
         Inventory chestInventory = null;
-        Location chestLocation;
+        Block chestBlock;
         List<Planned> order = new ArrayList<>(plan);
         if (existingChest != null) {
             chestInventory = existingChest.getBlockInventory();
-            chestLocation = existingChest.getLocation();
+            chestBlock = existingChest.getBlock();
         } else {
-            chestLocation = spot.getLocation();
+            chestBlock = spot;
             int spotIndex = indexOf(order, spot);
             if (spotIndex < 0) {
                 // The spot is above a block to remove, the chest can be placed right away. The block below is
                 // removed first, it was only fine to have below the chest because it goes (e.g. a hopper).
                 chestInventory = placeChest(spot);
-                if (chestInventory == null) return false;
+                if (chestInventory == null) return Result.NOTHING;
                 order.add(0, order.remove(indexOf(order, spot.getRelative(BlockFace.DOWN))));
             } else {
                 // The spot is taken by a block to remove, which is removed first.
@@ -291,20 +300,25 @@ final class RefundRun {
             }
         }
 
+        ChestSpace space = new ChestSpace(chestInventory);
+        Location chestLocation = chestBlock.getLocation();
         RefundGroup[] groups = cfg.groups();
         int[] allowed = excess.clone();
-        boolean[] recounted = new boolean[groups.length];
         int[] removed = new int[groups.length];
+        int[] othersRemovedAtCount = new int[groups.length];
+        int total = 0;
         Map<Material, Integer> refunded = new EnumMap<>(Material.class);
         StringJoiner positions = new StringJoiner(" ");
         for (Planned planned : order) {
             RefundGroup group = planned.group();
             int index = group.index();
 
-            // Counted again before touching a group, removing other blocks may have affected it (e.g. through physics).
-            if (!recounted[index]) {
-                allowed[index] = Math.min(allowed[index], verify(group).size() - group.limit());
-                recounted[index] = true;
+            // Removing blocks may affect blocks of other groups (e.g. through physics), so a group is counted again
+            // if blocks of other groups were removed since it was counted last, the first count being at the start.
+            int othersRemoved = total - removed[index];
+            if (othersRemoved > othersRemovedAtCount[index]) {
+                allowed[index] = Math.min(allowed[index], removed[index] + verify(group).size() - group.limit());
+                othersRemovedAtCount[index] = othersRemoved;
             }
             if (removed[index] >= allowed[index]) continue;
 
@@ -319,15 +333,14 @@ final class RefundRun {
 
             List<ItemStack> items = refundItems(block, group);
             if (items == null) continue;
-            if (chestInventory == null) {
-                // The spot must go first, nothing is removed before the chest has a place.
-                if (keyOf(block) != keyOf(spot) || !fits(null, items)) break;
-            } else if (!fits(chestInventory, items)) {
-                break;
-            }
+
+            // The spot must go first, nothing is removed before the chest has a place.
+            if (chestInventory == null && keyOf(block) != keyOf(spot)) break;
+            if (!space.reserve(items)) break;
 
             remove(block, type);
             removed[index]++;
+            total++;
             refunded.merge(group.material(), 1, Integer::sum);
             positions.add(block.getX() + "," + block.getY() + "," + block.getZ());
 
@@ -337,23 +350,28 @@ final class RefundRun {
                     plugin.getLogger().severe("Graceful refund could not place a chest at " + format(chestLocation)
                             + ", dropping the refund of " + format(block.getLocation()) + " instead.");
                     drop(items, block.getLocation());
-                    break;
+                    return new Result(false, -1);
                 }
             }
             store(chestInventory, items, chestLocation);
         }
 
-        int total = 0;
+        if (total == 0) {
+            // Nothing turned out to be removable after all, a chest placed for it goes again (it is still empty).
+            if (existingChest == null && chestInventory != null && chestInventory.isEmpty()) {
+                chestBlock.setType(Material.AIR, false);
+                updateCache(chestLocation, Material.CHEST, Material.AIR);
+            }
+            return Result.NOTHING;
+        }
+
         boolean remaining = false;
         for (RefundGroup group : groups) {
-            int index = group.index();
-            total += removed[index];
-            remaining |= removed[index] < allowed[index];
+            remaining |= removed[group.index()] < allowed[group.index()];
         }
-        if (total == 0) return false;
 
         announce(refunded, total, chestLocation, positions.toString());
-        return remaining;
+        return new Result(remaining, positionOf(chestBlock));
     }
 
     private static int indexOf(List<Planned> plan, Block block) {
@@ -391,7 +409,9 @@ final class RefundRun {
                 }
             }
         }
-        return items.size() <= CHEST_SIZE ? items : null;
+
+        // A block which would not even fit into an empty chest can never be refunded.
+        return ChestSpace.slotsNeeded(items) <= CHEST_SIZE ? items : null;
     }
 
     /**
@@ -436,7 +456,7 @@ final class RefundRun {
     private void store(Inventory chestInventory, List<ItemStack> items, Location chestLocation) {
         Map<Integer, ItemStack> leftover = chestInventory.addItem(items.toArray(new ItemStack[0]));
         if (!leftover.isEmpty()) {
-            // Can't happen, whether the items fit was checked right before.
+            // Can't happen, room for the items was reserved right before.
             plugin.getLogger().warning("Graceful refund: the chest at " + format(chestLocation)
                     + " was full, dropping the rest of the refund next to it.");
             drop(new ArrayList<>(leftover.values()), chestLocation);
@@ -448,35 +468,6 @@ final class RefundRun {
         for (ItemStack item : items) {
             world.dropItem(dropLocation, item);
         }
-    }
-
-    /**
-     * Returns whether all items fit into the inventory (an empty chest if null), without changing it.
-     */
-    private static boolean fits(Inventory inventory, List<ItemStack> items) {
-        return copyOf(inventory).addItem(copyOf(items)).isEmpty();
-    }
-
-    private static Inventory copyOf(Inventory inventory) {
-        Inventory copy = Bukkit.createInventory(null, inventory == null ? CHEST_SIZE : inventory.getSize());
-        if (inventory != null) {
-            ItemStack[] contents = inventory.getContents();
-            for (int i = 0; i < contents.length; i++) {
-                if (contents[i] != null) {
-                    contents[i] = contents[i].clone();
-                }
-            }
-            copy.setContents(contents);
-        }
-        return copy;
-    }
-
-    private static ItemStack[] copyOf(List<ItemStack> items) {
-        ItemStack[] copy = new ItemStack[items.size()];
-        for (int i = 0; i < copy.length; i++) {
-            copy[i] = items.get(i).clone();
-        }
-        return copy;
     }
 
     /**
@@ -541,5 +532,67 @@ final class RefundRun {
         return location.getBlockX() + ", " + location.getBlockY() + ", " + location.getBlockZ();
     }
 
+    /**
+     * The outcome of a run.
+     *
+     * @param again whether blocks were removed while more remain beyond the limit, i.e. whether to run again
+     * @param chest the position of the chest refunded into (see {@link BlockPositions}), or -1 if none
+     */
+    record Result(boolean again, int chest) {
+
+        static final Result NOTHING = new Result(false, -1);
+    }
+
     private record Planned(Block block, RefundGroup group) {}
+
+    /**
+     * Keeps track of the room left in a chest without copying it. Counts pessimistically: every stack of contents
+     * is taken to need slots of its own, only the refunded block items fill up stacks of their own first. So what is
+     * counted to fit always fits (it merely may leave room unused).
+     */
+    private static final class ChestSpace {
+
+        private final Map<Material, Integer> blockItems = new EnumMap<>(Material.class);
+        private int freeSlots = 0;
+
+        private ChestSpace(Inventory inventory) {
+            if (inventory == null) {
+                freeSlots = CHEST_SIZE;
+                return;
+            }
+            for (ItemStack stack : inventory.getStorageContents()) {
+                if (stack == null || stack.getType().isAir()) freeSlots++;
+            }
+        }
+
+        /**
+         * Returns the slots the items of a block need at most on their own, the first item being the block itself.
+         */
+        private static int slotsNeeded(List<ItemStack> items) {
+            int slots = 1;
+            for (int i = 1; i < items.size(); i++) {
+                slots += slotsOf(items.get(i));
+            }
+            return slots;
+        }
+
+        private static int slotsOf(ItemStack stack) {
+            int maxStackSize = Math.max(1, stack.getMaxStackSize());
+            return Math.max(1, (stack.getAmount() + maxStackSize - 1) / maxStackSize);
+        }
+
+        /**
+         * Reserves room for the items of a block (the first item being the block itself), if there is enough.
+         */
+        private boolean reserve(List<ItemStack> items) {
+            ItemStack blockItem = items.get(0);
+            int added = blockItems.getOrDefault(blockItem.getType(), 0);
+            int needed = slotsNeeded(items) - (added % Math.max(1, blockItem.getMaxStackSize()) == 0 ? 0 : 1);
+            if (needed > freeSlots) return false;
+
+            freeSlots -= needed;
+            blockItems.put(blockItem.getType(), added + 1);
+            return true;
+        }
+    }
 }
