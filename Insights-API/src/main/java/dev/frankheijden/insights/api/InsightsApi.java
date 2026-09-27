@@ -105,12 +105,21 @@ public final class InsightsApi {
      * <p>Limits of other worlds and addons, and limits the player has the bypass permission for,
      * are left out. The list is empty when no limits apply or when the area has no scan data yet,
      * which {@link #hasData(Player)} tells apart.</p>
+     *
+     * <p>A chunk found holding more than allowed is handed to the graceful refund, if enabled.</p>
      */
     public static List<LimitStatus> getLimits(Player player) {
-        Optional<Storage> storageOptional = getStorage(player.getLocation());
-        return storageOptional.isEmpty()
-                ? Collections.emptyList()
-                : getLimits(player, storageOptional.get());
+        Location location = player.getLocation();
+        Optional<Storage> storageOptional = getStorage(location);
+        if (storageOptional.isEmpty()) return Collections.emptyList();
+
+        // A chunk found holding more than allowed is looked at by the graceful refund. This only reads the cached
+        // counts, which is cheap, and a chunk is looked at no more than once per cooldown.
+        var plugin = InsightsPlugin.getInstance();
+        if (plugin.getAddonManager().getRegion(location).isEmpty()) {
+            plugin.getGracefulRefund().checkChunk(location.getWorld(), ChunkUtils.getKey(location), storageOptional.get());
+        }
+        return getLimits(player, storageOptional.get());
     }
 
     /**

@@ -50,9 +50,9 @@ public class GracefulRefund {
     }
 
     /**
-     * Checks the counts of a chunk which have just been scanned and cached.
+     * Checks the cached counts of a chunk, e.g. once it has been scanned, or when they are looked at.
      */
-    public void onChunkScanned(World world, long chunkKey, Storage storage) {
+    public void checkChunk(World world, long chunkKey, Storage storage) {
         try {
             RefundConfig cfg = getConfig();
             if (cfg == null || !cfg.appliesTo(world)) return;
@@ -64,8 +64,8 @@ public class GracefulRefund {
                 }
             }
         } catch (RuntimeException ex) {
-            // Never let this get in the way of scanning.
-            plugin.getLogger().log(Level.SEVERE, "Graceful refund failed to check a scanned chunk", ex);
+            // Never let this get in the way of whatever looked at the counts.
+            plugin.getLogger().log(Level.SEVERE, "Graceful refund failed to check a chunk", ex);
         }
     }
 

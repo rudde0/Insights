@@ -187,7 +187,12 @@ public abstract class InsightsListener extends InsightsBase implements Listener 
                     Messages.tagOf("name", limitInfo.getName()),
                     Messages.tagOf("area", area)
             ).sendTo(player);
-            if (regionOptional.isEmpty()) refreshIfOutdated(chunk, storage);
+            if (regionOptional.isEmpty()) {
+                refreshIfOutdated(chunk, storage);
+
+                // The chunk may be beyond a limit rather than at it, e.g. through WorldEdit or since before the limit.
+                plugin.getGracefulRefund().checkChunk(world, chunkKey, storage);
+            }
             return true;
         }
         return false;

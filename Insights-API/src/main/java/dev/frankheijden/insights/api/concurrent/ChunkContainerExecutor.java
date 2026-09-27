@@ -95,7 +95,7 @@ public class ChunkContainerExecutor implements ContainerExecutor {
             metricsManager.getChunkScanMetric().increment();
             metricsManager.getTotalBlocksScanned().add(container.getChunkCuboid().getVolume());
 
-            if (options.save()) plugin.getGracefulRefund().onChunkScanned(world, chunkKey, storage);
+            if (options.save()) plugin.getGracefulRefund().checkChunk(world, chunkKey, storage);
             return storage;
         });
     }

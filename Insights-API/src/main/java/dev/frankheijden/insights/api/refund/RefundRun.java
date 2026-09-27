@@ -51,6 +51,7 @@ final class RefundRun {
 
     private static final int CHEST_SIZE = 27;
     private static final BlockFace[] SIDES = {BlockFace.NORTH, BlockFace.EAST, BlockFace.SOUTH, BlockFace.WEST};
+    private static final int MAX_SPOT_HEIGHT = 8;
 
     private final GracefulRefund refund;
     private final InsightsPlugin plugin;
@@ -93,15 +94,17 @@ final class RefundRun {
         RefundGroup[] groups = cfg.groups();
         int[] excess = new int[groups.length];
         List<List<Block>> candidates = new ArrayList<>(groups.length);
-        boolean exceeded = false;
+        StringJoiner exceeded = new StringJoiner(", ");
         for (RefundGroup group : groups) {
             List<Block> verified = verify(group);
             int groupExcess = verified.size() - group.limit();
             excess[group.index()] = Math.max(0, groupExcess);
             candidates.add(groupExcess > 0 ? removable(group, verified) : List.of());
-            exceeded |= groupExcess > 0;
+            if (groupExcess > 0) {
+                exceeded.add(EnumUtils.pretty(group.material()) + " " + verified.size() + "/" + group.limit());
+            }
         }
-        if (!exceeded) return Result.NOTHING;
+        if (exceeded.length() == 0) return Result.NOTHING;
 
         // Refunds go into the chest of the previous refund in this chunk if it has room, or else into a new chest.
         Chest existingChest = findRefundChest();
@@ -110,19 +113,27 @@ final class RefundRun {
         if (plan.isEmpty()) {
             existingChest = null;
             plan = plan(candidates, excess, null);
-            if (plan.isEmpty()) return Result.NOTHING;
+            if (plan.isEmpty()) {
+                logSkipped(exceeded, "none of those blocks can be handed back as a whole (named or plugin-tagged "
+                        + "containers, containers with loot yet to generate, blocks spanning several blocks or items)");
+                return Result.NOTHING;
+            }
 
             spot = findSpot(plan);
             if (spot == null) {
-                if (cfg.log()) {
-                    plugin.getLogger().warning("Graceful refund: chunk " + chunkX + ", " + chunkZ + " in '"
-                            + world.getName() + "' holds more than allowed, but there is no room for a chest.");
-                }
+                logSkipped(exceeded, "there is no room for a chest next to the blocks to remove");
                 return Result.NOTHING;
             }
         }
 
         return execute(plan, excess, existingChest, spot);
+    }
+
+    private void logSkipped(StringJoiner exceeded, String reason) {
+        if (cfg.log()) {
+            plugin.getLogger().warning("Graceful refund: chunk " + chunkX + ", " + chunkZ + " in '" + world.getName()
+                    + "' holds more than allowed (" + exceeded + "), but nothing was refunded: " + reason + ".");
+        }
     }
 
     /**
@@ -218,7 +229,9 @@ final class RefundRun {
     }
 
     /**
-     * Finds a place for a new chest: preferably where a removed block was, else right above one.
+     * Finds a place for a new chest near the blocks to remove: where one of them is (those are empty once removed),
+     * or else an empty spot above or next to one. Of all these the least disruptive spot is picked, a chest may only
+     * never end up where it would break something (a cactus next to it).
      */
     private Block findSpot(List<Planned> plan) {
         Set<Long> cleared = new HashSet<>(plan.size());
@@ -226,45 +239,92 @@ final class RefundRun {
             cleared.add(keyOf(planned.block()));
         }
 
-        for (Planned planned : plan) {
-            if (isSuitableSpot(planned.block(), cleared)) return planned.block();
+        Set<Long> seen = new HashSet<>();
+        Block best = null;
+        int bestPenalty = Integer.MAX_VALUE;
+        for (Block candidate : spotCandidates(plan)) {
+            if (!seen.add(keyOf(candidate))) continue;
+
+            int penalty = spotPenalty(candidate, cleared);
+            if (penalty >= 0 && penalty < bestPenalty) {
+                best = candidate;
+                bestPenalty = penalty;
+                if (penalty == 0) break;
+            }
         }
-        for (Planned planned : plan) {
-            Block above = planned.block().getRelative(BlockFace.UP);
-            if (above.getY() < maxY && isAir(above.getType()) && isSuitableSpot(above, cleared)) return above;
-        }
-        return null;
+        return best;
     }
 
     /**
-     * Checks whether a chest at given (empty or cleared) spot neither breaks nor drains anything, and can be opened.
+     * Returns the spots to consider for a chest, closest to the blocks to remove first.
      */
-    private boolean isSuitableSpot(Block spot, Set<Long> cleared) {
-        if (isInRegion(spot)) return false;
-
-        // A hopper below would drain the chest, and farmland turns into dirt below it.
-        Block below = spot.getRelative(BlockFace.DOWN);
-        if (below.getY() >= minY && !cleared.contains(keyOf(below))) {
-            Material type = below.getType();
-            if (type == Material.HOPPER || type == Material.FARMLAND) return false;
+    private List<Block> spotCandidates(List<Planned> plan) {
+        List<Block> candidates = new ArrayList<>();
+        for (Planned planned : plan) {
+            candidates.add(planned.block());
         }
+        for (Planned planned : plan) {
+            // The first empty block above, e.g. on top of the floor covering a row of hoppers.
+            Block above = planned.block().getRelative(BlockFace.UP);
+            for (int i = 0; i < MAX_SPOT_HEIGHT && above.getY() < maxY; i++) {
+                if (isAir(above.getType())) {
+                    candidates.add(above);
+                    break;
+                }
+                above = above.getRelative(BlockFace.UP);
+            }
+        }
+        for (Planned planned : plan) {
+            for (BlockFace face : SIDES) {
+                Block side = planned.block().getRelative(face);
+                if (isInChunk(side) && isAir(side.getType())) {
+                    candidates.add(side);
+                }
+            }
+        }
+        return candidates;
+    }
 
-        // A chest can't be opened with a solid block on top of it.
-        Block above = spot.getRelative(BlockFace.UP);
-        if (above.getY() < maxY && !cleared.contains(keyOf(above)) && above.getType().isOccluding()) return false;
+    /**
+     * Returns how disruptive a chest at the given spot would be (0 being not at all), or -1 if it can't go there.
+     * Spots of blocks to remove count as empty, as do their neighbours which are removed.
+     */
+    private int spotPenalty(Block spot, Set<Long> cleared) {
+        if (!isInChunk(spot) || spot.getY() < minY || spot.getY() >= maxY) return -1;
+        if (!cleared.contains(keyOf(spot)) && !isAir(spot.getType())) return -1;
+        if (isInRegion(spot)) return -1;
 
+        int penalty = 0;
         for (BlockFace face : SIDES) {
             Block side = spot.getRelative(face);
 
             // Reading a block of an unloaded chunk would load it.
-            if (!world.isChunkLoaded(side.getX() >> 4, side.getZ() >> 4)) return false;
+            if (!world.isChunkLoaded(side.getX() >> 4, side.getZ() >> 4)) return -1;
             if (cleared.contains(keyOf(side))) continue;
 
-            // A cactus breaks next to a chest, and chests next to each other are easily mistaken for one.
+            // A cactus breaks next to a chest. Chests next to each other are merely easily mistaken for one.
             Material type = side.getType();
-            if (type == Material.CACTUS || type == Material.CHEST || type == Material.TRAPPED_CHEST) return false;
+            if (type == Material.CACTUS) return -1;
+            if (type == Material.CHEST || type == Material.TRAPPED_CHEST) penalty += 1;
         }
-        return true;
+
+        // A hopper below moves the refund out of the chest (into the owner's own hoppers),
+        // and farmland below turns into dirt.
+        Block below = spot.getRelative(BlockFace.DOWN);
+        if (below.getY() >= minY && !cleared.contains(keyOf(below))) {
+            Material type = below.getType();
+            if (type == Material.HOPPER) penalty += 8;
+            if (type == Material.FARMLAND) penalty += 2;
+        }
+
+        // A chest with a solid block on top can't be opened, only broken (which drops its contents).
+        Block above = spot.getRelative(BlockFace.UP);
+        if (above.getY() < maxY && !cleared.contains(keyOf(above)) && above.getType().isOccluding()) penalty += 4;
+        return penalty;
+    }
+
+    private boolean isInChunk(Block block) {
+        return block.getX() >> 4 == chunkX && block.getZ() >> 4 == chunkZ;
     }
 
     /**
@@ -289,11 +349,14 @@ final class RefundRun {
             chestBlock = spot;
             int spotIndex = indexOf(order, spot);
             if (spotIndex < 0) {
-                // The spot is above a block to remove, the chest can be placed right away. The block below is
-                // removed first, it was only fine to have below the chest because it goes (e.g. a hopper).
+                // The spot is empty already, the chest can be placed right away. A block to remove right below it
+                // is removed first, as it was only fine to have below the chest because it goes (e.g. a hopper).
                 chestInventory = placeChest(spot);
                 if (chestInventory == null) return Result.NOTHING;
-                order.add(0, order.remove(indexOf(order, spot.getRelative(BlockFace.DOWN))));
+                int belowIndex = indexOf(order, spot.getRelative(BlockFace.DOWN));
+                if (belowIndex >= 0) {
+                    order.add(0, order.remove(belowIndex));
+                }
             } else {
                 // The spot is taken by a block to remove, which is removed first.
                 order.add(0, order.remove(spotIndex));
