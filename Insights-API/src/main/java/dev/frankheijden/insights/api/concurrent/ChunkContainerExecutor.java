@@ -108,6 +108,16 @@ public class ChunkContainerExecutor implements ContainerExecutor {
         return containerExecutor.submit(container);
     }
 
+    /**
+     * Loads the chunk asynchronously and submits it for scanning once it is available.
+     */
+    public CompletableFuture<Storage> submitLoadChunkContainer(World world, int chunkX, int chunkZ, ChunkCuboid cuboid, ScanOptions options) {
+        return world.getChunkAtAsync(chunkX, chunkZ, false, true)
+                .thenCompose(chunk ->
+                        submit(new LoadedChunkContainer(nms, chunk, cuboid, options), options)
+                );
+    }
+
     @Override
     public void shutdown() {
         containerExecutor.shutdown();

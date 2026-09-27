@@ -40,7 +40,7 @@ public interface Storage {
      * Item must be of type Material or EntityType.
      */
     default long count(Limit limit, ScanObject<?> item) {
-        return limit.getType() == LimitType.PERMISSION ? count(item) : count(limit);
+        return limit.getType() == LimitType.PERMISSION ? count(limit.getScanObjects(item)) : count(limit);
     }
 
     /**

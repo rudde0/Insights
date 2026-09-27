@@ -66,14 +66,31 @@ public abstract class InsightsListener extends InsightsBase implements Listener 
     }
 
     protected void handleModification(Location location, Material from, Material to, int amount) {
-        handleModification(location, storage -> {
-            storage.modify(ScanObject.of(from), -amount);
-            storage.modify(ScanObject.of(to), amount);
-        });
+        // Same lookups and modifications, in the same order, as handleModification(location, storageConsumer),
+        // without a consumer and Optional chain per call: this runs for every tracked block change.
+        UUID worldUid = location.getWorld().getUID();
+        long chunkKey = ChunkUtils.getKey(location);
+        Optional<Storage> chunkStorageOptional = plugin.getWorldStorage().getWorld(worldUid).get(chunkKey);
+        if (chunkStorageOptional.isPresent()) {
+            modify(chunkStorageOptional.get(), from, to, amount);
+        }
+
+        Optional<Region> regionOptional = plugin.getAddonManager().getRegion(location);
+        if (regionOptional.isPresent()) {
+            Optional<Storage> addonStorageOptional = plugin.getAddonStorage().get(regionOptional.get().getKey());
+            if (addonStorageOptional.isPresent()) {
+                modify(addonStorageOptional.get(), from, to, amount);
+            }
+        }
     }
 
     protected void handleModification(Location location, EntityType entity, int amount) {
         handleModification(location, storage -> storage.modify(ScanObject.of(entity), amount));
+    }
+
+    private static void modify(Storage storage, Material from, Material to, int amount) {
+        storage.modify(ScanObject.of(from), -amount);
+        storage.modify(ScanObject.of(to), amount);
     }
 
     protected boolean handleAddition(Player player, Location location, ScanObject<?> item, int delta) {
@@ -352,8 +369,11 @@ public abstract class InsightsListener extends InsightsBase implements Listener 
     }
 
     private void scanRegion(Player player, Region region, Consumer<Storage> storageConsumer) {
-        // Submit the cuboid for scanning
-        plugin.getAddonScanTracker().add(region.getAddon());
+        // Submit the cuboid for scanning.
+        // Tracked by region key, which is what all the isQueued() checks look up. Tracking by
+        // addon name instead made those checks always miss, so every block placed in a region
+        // which was still being scanned queued yet another full scan of that region.
+        plugin.getAddonScanTracker().add(region.getKey());
         List<ChunkPart> chunkParts = region.toChunkParts();
         ScanTask.scan(
                 plugin,
@@ -365,7 +385,7 @@ public abstract class InsightsListener extends InsightsBase implements Listener 
                 DistributionStorage::new,
                 (storage, loc, acc) -> storage.mergeRight(acc),
                 storage -> {
-                    plugin.getAddonScanTracker().remove(region.getAddon());
+                    plugin.getAddonScanTracker().remove(region.getKey());
 
                     // Store the cuboid
                     plugin.getAddonStorage().put(region.getKey(), storage);

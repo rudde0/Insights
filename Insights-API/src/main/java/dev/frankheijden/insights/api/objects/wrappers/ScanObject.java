@@ -27,10 +27,13 @@ public abstract class ScanObject<T extends Enum<T>> {
 
     private final T object;
     private final Type type;
+    private final int hashCode;
 
     protected ScanObject(T object, Type type) {
         this.object = object;
         this.type = type;
+        // Immutable, and the key of every distribution map lookup, so the (unchanged) hash is computed once.
+        this.hashCode = Objects.hash(object, type);
     }
 
     public static MaterialObject of(Material material) {
@@ -129,7 +132,7 @@ public abstract class ScanObject<T extends Enum<T>> {
 
     @Override
     public int hashCode() {
-        return Objects.hash(object, type);
+        return hashCode;
     }
 
     public enum Type {

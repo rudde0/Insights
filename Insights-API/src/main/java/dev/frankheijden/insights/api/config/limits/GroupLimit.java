@@ -4,6 +4,7 @@ import dev.frankheijden.insights.api.concurrent.ScanOptions;
 import dev.frankheijden.insights.api.config.parser.YamlParseException;
 import dev.frankheijden.insights.api.config.parser.YamlParser;
 import dev.frankheijden.insights.api.objects.wrappers.ScanObject;
+import dev.frankheijden.insights.api.util.MaterialVariants;
 import org.bukkit.Material;
 import org.bukkit.entity.EntityType;
 import java.util.Collections;
@@ -24,9 +25,10 @@ public class GroupLimit extends Limit {
         super(LimitType.GROUP, info);
         this.name = name;
         this.limit = limit;
-        this.materials = Collections.unmodifiableSet(materials);
+        // A group containing a block also counts its variants (e.g. bamboo saplings for bamboo).
+        this.materials = Collections.unmodifiableSet(MaterialVariants.withVariants(materials));
         this.entities = Collections.unmodifiableSet(entities);
-        this.scanObjects = Collections.unmodifiableSet(ScanObject.of(materials, entities));
+        this.scanObjects = Collections.unmodifiableSet(ScanObject.of(this.materials, entities));
         this.scanOptions = determineScanOptions();
     }
 

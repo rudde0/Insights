@@ -16,7 +16,6 @@ import dev.frankheijden.insights.api.utils.StringUtils;
 import io.papermc.paper.threadedregions.scheduler.AsyncScheduler;
 import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import net.kyori.adventure.text.Component;
-import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import java.time.Duration;
 import java.util.Comparator;
@@ -24,7 +23,6 @@ import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.TimeUnit;
@@ -418,36 +416,22 @@ public class ScanTask<R> implements Runnable {
             var loc = chunkPart.getChunkLocation();
             var world = loc.getWorld();
 
-            Bukkit.getRegionScheduler().run(plugin, world, loc.getX(), loc.getZ(), scheduledTask -> {
-                CompletableFuture<Storage> storageFuture;
-                if (world.isChunkLoaded(loc.getX(), loc.getZ())) {
-                    storageFuture = executor.submit(
-                            world.getChunkAt(loc.getX(), loc.getZ()),
-                            chunkPart.getChunkCuboid(),
-                            options
-                    );
-                } else {
-                    storageFuture = executor.submit(
-                            loc.getWorld(),
-                            loc.getX(),
-                            loc.getZ(),
-                            chunkPart.getChunkCuboid(),
-                            options
-                    );
-                }
-                storageFuture
-                        .thenAccept(storage -> resultMerger.accept(storage, loc, result))
-                        .thenRun(() -> {
-                            iterationChunks.incrementAndGet();
-                            chunks.incrementAndGet();
-                        })
-                        .exceptionally(th -> {
-                            if (!completedExceptionally.getAndSet(true)) {
-                                plugin.getLogger().log(Level.SEVERE, th, th::getMessage);
-                            }
-                            return null;
-                        });
-            });
+            executor.submitLoadChunkContainer(world,
+                    loc.getX(),
+                    loc.getZ(),
+                    chunkPart.getChunkCuboid(),
+                    options)
+                    .thenAccept(storage -> resultMerger.accept(storage, loc, result))
+                    .thenRun(() -> {
+                        iterationChunks.incrementAndGet();
+                        chunks.incrementAndGet();
+                    })
+                    .exceptionally(th -> {
+                        if (!completedExceptionally.getAndSet(true)) {
+                            plugin.getLogger().log(Level.SEVERE, th, th::getMessage);
+                        }
+                        return null;
+                    });
         }
     }
 

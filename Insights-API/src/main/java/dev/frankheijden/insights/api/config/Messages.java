@@ -7,7 +7,6 @@ import dev.frankheijden.insights.api.objects.chunk.ChunkLocation;
 import dev.frankheijden.insights.api.objects.wrappers.ScanObject;
 import dev.frankheijden.insights.api.utils.StringUtils;
 import net.kyori.adventure.audience.Audience;
-import net.kyori.adventure.platform.bukkit.BukkitAudiences;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.event.HoverEvent;
@@ -33,23 +32,17 @@ import java.util.function.ToLongFunction;
 public class Messages {
 
     private final InsightsPlugin plugin;
-    private final BukkitAudiences audiences;
     private final YamlParser parser;
     private final MiniMessage miniMessage;
     private final Map<Key, String> messageCache;
     private final TagResolver prefixResolver;
 
-    protected Messages(InsightsPlugin plugin, BukkitAudiences audiences, YamlParser parser) {
+    protected Messages(InsightsPlugin plugin, YamlParser parser) {
         this.plugin = plugin;
-        this.audiences = audiences;
         this.parser = parser;
         this.miniMessage = MiniMessage.miniMessage();
         this.messageCache = new EnumMap<>(Key.class);
         this.prefixResolver = tagOf("prefix", miniMessage.deserialize(getRawMessage(Key.PREFIX)));
-    }
-
-    public BukkitAudiences getAudiences() {
-        return audiences;
     }
 
     public Message getMessage(Key messageKey) {
@@ -87,13 +80,31 @@ public class Messages {
         );
     }
 
+    /**
+     * Creates a paginated message from elements which are formatted by the given function.
+     */
+    public <T> PaginatedMessage<T> createPaginatedMessage(
+            Message header,
+            Message footer,
+            T[] elements,
+            Function<T, Component> elementFormatFunction
+    ) {
+        return new PaginatedMessage<>(
+                header,
+                footer,
+                elements,
+                elementFormatFunction,
+                plugin.getSettings().PAGINATION_RESULTS_PER_PAGE
+        );
+    }
+
     private <T> Component addHover(Component component, T element, Component displayName) {
         if (element instanceof ScanObject<?> scanObject) {
             Object obj = scanObject.getObject();
 
             if (obj instanceof Material material) {
                 var key = material.getKey();
-                if (material.isItem()) {
+                if (material.isItem() && !material.isAir()) {
                     return component.hoverEvent(HoverEvent.showItem(
                             net.kyori.adventure.key.Key.key(key.getNamespace(), key.getKey()),
                             1
@@ -122,11 +133,10 @@ public class Messages {
 
     public static Messages load(
             InsightsPlugin plugin,
-            BukkitAudiences audiences,
             File file,
             InputStream defaultSettings
     ) throws IOException {
-        return new Messages(plugin, audiences, PassiveYamlParser.load(file, defaultSettings));
+        return new Messages(plugin, PassiveYamlParser.load(file, defaultSettings));
     }
 
     public static TagResolver tagOf(String name, String content) {
@@ -166,6 +176,11 @@ public class Messages {
         SCANCACHE_RESULT_FORMAT("scancache.result.format"),
         SCANCACHE_RESULT_FOOTER("scancache.result.footer"),
         SCANHISTORY_NO_HISTORY("scanhistory.no-history"),
+        CHUNKLIMITS_NO_LIMITS("chunklimits.no-limits"),
+        CHUNKLIMITS_NO_CACHE("chunklimits.no-cache"),
+        CHUNKLIMITS_RESULT_HEADER("chunklimits.result.header"),
+        CHUNKLIMITS_RESULT_FORMAT("chunklimits.result.format"),
+        CHUNKLIMITS_RESULT_FOOTER("chunklimits.result.footer"),
         PAGINATION_BUTTON_LEFT("pagination.button-left"),
         PAGINATION_BUTTON_RIGHT("pagination.button-right"),
         PAGINATION_BUTTON_COLOR_ACTIVE("pagination.button-color-active"),
@@ -272,7 +287,14 @@ public class Messages {
          * Sends the message to given receiver, using the message type defined.
          */
         public void sendTo(CommandSender sender) {
-            sendTo(audiences.sender(sender));
+            if (content != null && !content.isEmpty()) {
+                var component = miniMessage.deserialize(content, resolver);
+                if (type == Type.ACTIONBAR) {
+                    sender.sendActionBar(component);
+                } else {
+                    sender.sendMessage(component);
+                }
+            }
         }
 
         /**
@@ -338,25 +360,25 @@ public class Messages {
         }
 
         private Component createButton(int page, ButtonType type) {
-            var button = Component.empty().toBuilder();
+            boolean inactive = (type == ButtonType.LEFT && page == 0)
+                    || (type == ButtonType.RIGHT && page == getPageAmount() - 1);
+            Key buttonColor = inactive
+                    ? Key.PAGINATION_BUTTON_COLOR_INACTIVE
+                    : Key.PAGINATION_BUTTON_COLOR_ACTIVE;
 
-            Key buttonColor;
-            if ((type == ButtonType.LEFT && page == 0) || (type == ButtonType.RIGHT && page == getPageAmount() - 1)) {
-                buttonColor = Key.PAGINATION_BUTTON_COLOR_INACTIVE;
-            } else {
-                buttonColor = Key.PAGINATION_BUTTON_COLOR_ACTIVE;
+            // Built without a ComponentBuilder on purpose. TextComponent#toBuilder() is a covariant
+            // override whose descriptor differs between adventure versions, so calling it throws
+            // NoSuchMethodError whenever the server ships a different adventure than we compiled on.
+            Component button = miniMessage.deserialize(getRawMessage(buttonColor) + getRawMessage(type.key));
+            if (inactive) return button;
 
-                int clickPage = type == ButtonType.LEFT ? page : page + 2;
-                button.hoverEvent(HoverEvent.showText(miniMessage.deserialize(
-                        getRawMessage(Key.PAGINATION_BUTTON_HOVER),
-                        tagOf("page", clickPage)
-                )));
-                button.clickEvent(ClickEvent.runCommand("/scanhistory " + clickPage));
-            }
-
-            button.append(miniMessage.deserialize(getRawMessage(buttonColor) + getRawMessage(type.key)));
-
-            return button.build();
+            int clickPage = type == ButtonType.LEFT ? page : page + 2;
+            return button
+                    .hoverEvent(HoverEvent.showText(miniMessage.deserialize(
+                            getRawMessage(Key.PAGINATION_BUTTON_HOVER),
+                            tagOf("page", clickPage)
+                    )))
+                    .clickEvent(ClickEvent.runCommand("/scanhistory " + clickPage));
         }
 
         /**
@@ -380,12 +402,16 @@ public class Messages {
                 components.add(elementFormatFunction.apply(elements[i]));
             }
 
-            var audience = audiences.sender(sender);
-
             header.sendTo(sender);
-            components.forEach(audience::sendMessage);
+            components.forEach(sender::sendMessage);
             footer.sendTo(sender);
-            audience.sendMessage(createFooter(page));
+
+            // The page navigation is only worth sending when there is somewhere to navigate to.
+            // Its buttons run /scanhistory on click, which recent clients guard behind a
+            // "Confirm Command Execution" prompt, so don't put one in front of a single page.
+            if (getPageAmount() > 1) {
+                sender.sendMessage(createFooter(page));
+            }
         }
     }
 }

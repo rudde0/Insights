@@ -107,6 +107,14 @@ public abstract class Limit {
     public abstract Set<? extends ScanObject<?>> getScanObjects();
 
     /**
+     * Returns the set of ScanObjects which are counted towards the limit of given item.
+     * Note: item must be of type Material or EntityType!
+     */
+    public Set<? extends ScanObject<?>> getScanObjects(ScanObject<?> item) {
+        return getScanObjects();
+    }
+
+    /**
      * Determines the ScanOptions that are required for this limit.
      */
     protected ScanOptions determineScanOptions() {
