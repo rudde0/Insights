@@ -5,7 +5,7 @@ import dev.frankheijden.insights.api.concurrent.storage.Storage;
 import dev.frankheijden.insights.api.config.LimitEnvironment;
 import dev.frankheijden.insights.api.config.limits.Limit;
 import dev.frankheijden.insights.api.config.limits.LimitInfo;
-import dev.frankheijden.insights.api.config.limits.LimitType;
+import dev.frankheijden.insights.api.config.limits.PermissionLimit;
 import dev.frankheijden.insights.api.objects.wrappers.ScanObject;
 import dev.frankheijden.insights.api.utils.ChunkUtils;
 import org.bukkit.Location;
@@ -134,10 +134,11 @@ public final class InsightsApi {
         for (Limit limit : plugin.getLimits().getLimits()) {
             if (!env.test(limit)) continue;
 
-            if (limit.getType() == LimitType.PERMISSION) {
-                // Permission limits hold a separate limit per material/entity.
-                for (ScanObject<?> item : limit.getScanObjects()) {
-                    addStatus(statuses, item.name(), limit.getLimit(item), storage.count(limit, item));
+            if (limit instanceof PermissionLimit permissionLimit) {
+                // Permission limits hold a separate limit per material key/entity. Materials sharing a key
+                // (e.g. BAMBOO/BAMBOO_SAPLING) are reported once, under the key naming all of them.
+                for (ScanObject<?> item : permissionLimit.getEntryObjects()) {
+                    addStatus(statuses, permissionLimit.getKey(item), limit.getLimit(item), storage.count(limit, item));
                 }
             } else {
                 // Tile/group limits share one limit over all of their objects, so any of them

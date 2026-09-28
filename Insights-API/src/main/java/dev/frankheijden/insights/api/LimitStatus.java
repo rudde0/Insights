@@ -4,8 +4,10 @@ package dev.frankheijden.insights.api;
  * The state of a single limit in the area a player is standing in.
  *
  * @param key the material/entity name the limit applies to (e.g. {@code HOPPER}), or the name of
- *            the limit itself for limits which span multiple materials/entities
- * @param name the display name of the limit, as shown to players
+ *            the limit itself for limits which span multiple materials/entities. Materials sharing
+ *            one limit are joined by a slash (e.g. {@code BAMBOO/BAMBOO_SAPLING})
+ * @param name the display name of the limit, as shown to players, joined the same way
+ *            (e.g. {@code Bamboo/Bamboo sapling})
  * @param count the amount the area currently holds
  * @param limit the maximum amount the area allows
  */
