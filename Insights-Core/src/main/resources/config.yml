@@ -63,5 +63,7 @@ settings:
     delay-ticks: 100
     cooldown-seconds: 60
     max-blocks-per-run: 16
+    max-refunds-per-chunk: 2
+    refund-window-hours: 72
     notify-radius: 64
     log: true

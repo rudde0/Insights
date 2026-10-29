@@ -29,6 +29,12 @@ import java.util.logging.Level;
  *
  * <p>The work on the main thread is kept small and spread out: at most one chunk is looked at per tick
  * (server-wide), and a run removes at most max-blocks-per-run blocks, continuing with the rest shortly after.</p>
+ *
+ * <p>A chunk gets at most max-refunds-per-chunk refunds within refund-window-hours (see {@link RefundQuota}), beyond
+ * that blocks are removed without a refund. Otherwise a chunk which keeps going beyond its limit (e.g. a farm, or
+ * blocks placed by a machine) would turn the refund chest into a free, automated harvester. A refund split into
+ * several runs counts once, its runs only continue with as many blocks as were beyond the limit when it started,
+ * so blocks added in the meantime are not refunded as part of it.</p>
  */
 public class GracefulRefund {
 
@@ -41,6 +47,7 @@ public class GracefulRefund {
     private final Map<ChunkId, Long> pending = new ConcurrentHashMap<>();
     private final Map<ChunkId, Long> lastRuns = new ConcurrentHashMap<>();
     private final Map<ChunkId, Integer> chests = new ConcurrentHashMap<>();
+    private final RefundQuota quota = new RefundQuota();
     private final AtomicLong nextSlotMillis = new AtomicLong();
     private volatile RefundConfig config = null;
 
@@ -59,7 +66,7 @@ public class GracefulRefund {
 
             for (RefundGroup group : cfg.groups()) {
                 if (storage.count(cfg.limit(), group.scanObject()) > group.limit()) {
-                    flag(cfg, world, chunkKey, false);
+                    flag(cfg, world, chunkKey, null);
                     return;
                 }
             }
@@ -80,7 +87,7 @@ public class GracefulRefund {
 
             RefundGroup group = cfg.group(material);
             if (group != null && cfg.appliesTo(world) && storage.count(cfg.limit(), group.scanObject()) > group.limit()) {
-                flag(cfg, world, chunkKey, false);
+                flag(cfg, world, chunkKey, null);
             }
         } catch (RuntimeException ex) {
             // Never let this get in the way of the event which changed the block.
@@ -89,7 +96,7 @@ public class GracefulRefund {
     }
 
     /**
-     * Forgets about a chunk which unloaded.
+     * Forgets about a chunk which unloaded. Its refund quota is kept, unloading the chunk must not reset it.
      */
     public void onChunkUnload(World world, long chunkKey) {
         if (!lastRuns.isEmpty() || !chests.isEmpty()) {
@@ -133,9 +140,9 @@ public class GracefulRefund {
 
     /**
      * Schedules a look at the chunk. A chunk is looked at no more than once per cooldown, unless the previous run
-     * removed blocks and is continued (a large refund is split into several runs).
+     * removed blocks and is continued (a large refund is split into several runs), continuation being null if not.
      */
-    private void flag(RefundConfig cfg, World world, long chunkKey, boolean continuation) {
+    private void flag(RefundConfig cfg, World world, long chunkKey, Continuation continuation) {
         ChunkId id = new ChunkId(world.getUID(), chunkKey);
         long now = System.currentTimeMillis();
 
@@ -146,7 +153,7 @@ public class GracefulRefund {
         // Waiting a bit lets a burst of changes settle, and a chunk is handled at most once per cooldown.
         long delayMillis = cfg.delayTicks() * TICK_MILLIS;
         Long lastRun = lastRuns.get(id);
-        if (lastRun != null && !continuation) {
+        if (lastRun != null && continuation == null) {
             delayMillis = Math.max(delayMillis, lastRun + cfg.cooldownMillis() - now);
         }
 
@@ -175,7 +182,7 @@ public class GracefulRefund {
                     world,
                     id.chunkX(),
                     id.chunkZ(),
-                    task -> snapshot(id, slot),
+                    task -> snapshot(id, slot, continuation),
                     Math.max(1, (slot - now + TICK_MILLIS - 1) / TICK_MILLIS)
             );
         } catch (IllegalPluginAccessException ex) {
@@ -187,7 +194,7 @@ public class GracefulRefund {
     /**
      * Takes a snapshot of the chunk, runs on the thread owning the chunk.
      */
-    private void snapshot(ChunkId id, long slot) {
+    private void snapshot(ChunkId id, long slot, Continuation continuation) {
         boolean searching = false;
         boolean examined = false;
         try {
@@ -203,7 +210,7 @@ public class GracefulRefund {
             ChunkSnapshot snapshot = world.getChunkAt(id.chunkX(), id.chunkZ()).getChunkSnapshot(false, false, false, false);
             int minY = world.getMinHeight();
             int maxY = world.getMaxHeight();
-            plugin.getServer().getAsyncScheduler().runNow(plugin, task -> search(id, slot, cfg, snapshot, minY, maxY));
+            plugin.getServer().getAsyncScheduler().runNow(plugin, task -> search(id, slot, cfg, snapshot, minY, maxY, continuation));
             searching = true;
         } finally {
             if (!searching) done(id, slot, examined);
@@ -213,7 +220,15 @@ public class GracefulRefund {
     /**
      * Searches the snapshot for the refunded materials, runs off the main thread.
      */
-    private void search(ChunkId id, long slot, RefundConfig cfg, ChunkSnapshot snapshot, int minY, int maxY) {
+    private void search(
+            ChunkId id,
+            long slot,
+            RefundConfig cfg,
+            ChunkSnapshot snapshot,
+            int minY,
+            int maxY,
+            Continuation continuation
+    ) {
         boolean refunding = false;
         try {
             int[][] found = find(cfg, snapshot, minY, maxY);
@@ -236,7 +251,7 @@ public class GracefulRefund {
                     world,
                     id.chunkX(),
                     id.chunkZ(),
-                    task -> refund(id, slot, cfg, found, minY, maxY, outdated)
+                    task -> refund(id, slot, cfg, found, minY, maxY, outdated, continuation)
             );
             refunding = true;
         } catch (IllegalPluginAccessException ex) {
@@ -299,26 +314,52 @@ public class GracefulRefund {
     /**
      * Removes the blocks beyond the limit, runs on the thread owning the chunk.
      */
-    private void refund(ChunkId id, long slot, RefundConfig cfg, int[][] found, int minY, int maxY, boolean outdated) {
+    private void refund(
+            ChunkId id,
+            long slot,
+            RefundConfig cfg,
+            int[][] found,
+            int minY,
+            int maxY,
+            boolean outdated,
+            Continuation continuation
+    ) {
         World world = plugin.getServer().getWorld(id.worldUid());
         boolean again = false;
+        Continuation next = null;
         try {
             // Settings reloaded since, the next detection starts over with the new ones.
             if (world == null || getConfig() != cfg) return;
             if (!world.isChunkLoaded(id.chunkX(), id.chunkZ())) return;
 
+            // Whether blocks are refunded is decided once per refund, its continuations stick to that decision.
+            long now = System.currentTimeMillis();
+            boolean refunded = continuation == null ? !quota.isExhausted(id, cfg, now) : !continuation.refundless();
+            int budget = continuation == null ? Integer.MAX_VALUE : continuation.budget();
+
             int rememberedChest = chests.getOrDefault(id, -1);
-            RefundRun.Result result = new RefundRun(this, cfg, world, id.chunkX(), id.chunkZ(), minY, maxY, found, rememberedChest).run();
+            RefundRun.Result result = new RefundRun(
+                    this, cfg, world, id.chunkX(), id.chunkZ(), minY, maxY, found, rememberedChest, refunded, budget
+            ).run();
             if (result.chest() >= 0) {
                 chests.put(id, result.chest());
             }
+            if (continuation == null && refunded && result.removed() > 0) {
+                quota.record(id, cfg, now);
+            }
+
+            // Once the blocks which were beyond the limit at the start are removed, anything left counts as new.
             again = result.again();
+            int remaining = (continuation == null ? result.excess() : budget) - result.removed();
+            if (again && remaining > 0) {
+                next = new Continuation(!refunded, remaining);
+            }
 
             // Rescanned after the removals, so the fresh counts include them.
             if (outdated) refresh(world, id);
         } finally {
             done(id, slot, true);
-            if (again) flag(cfg, world, id.chunkKey(), true);
+            if (again) flag(cfg, world, id.chunkKey(), next);
         }
     }
 
@@ -337,4 +378,12 @@ public class GracefulRefund {
         }
         pending.remove(id, slot);
     }
+
+    /**
+     * A refund split into several runs, carried from one run to the next.
+     *
+     * @param refundless whether blocks are removed without a refund, as the chunk's quota was exhausted
+     * @param budget how many blocks the remaining runs may remove at most
+     */
+    private record Continuation(boolean refundless, int budget) {}
 }

@@ -10,6 +10,7 @@ messages:
   limit-notification: "<dark_aqua><name>: <aqua><count><dark_aqua>/<aqua><limit>"
   graceful-refund:
     notification: "<prefix><dark_aqua>This chunk held more than its limit allows. <aqua><blocks><dark_aqua> got removed and refunded into a chest at <aqua><x> <y> <z><dark_aqua>."
+    removed-notification: "<prefix><red>This chunk keeps going beyond its limit. <aqua><blocks><red> got removed without a refund, as this chunk was refunded <aqua><refunds></aqua> times within <aqua><hours></aqua> hours already."
     chest-name: "Refunded blocks"
   scan:
     start: "<prefix><dark_aqua>Scanning <aqua><bold><count></bold><dark_aqua> chunks..."

@@ -162,6 +162,7 @@ public class Messages {
         LIMIT_NOTIFICATION("limit-notification"),
         LIMIT_DISALLOWED_PLACEMENT("limit-disallowed-placement"),
         GRACEFUL_REFUND_NOTIFICATION("graceful-refund.notification"),
+        GRACEFUL_REFUND_REMOVED_NOTIFICATION("graceful-refund.removed-notification"),
         GRACEFUL_REFUND_CHEST_NAME("graceful-refund.chest-name"),
         SCAN_START("scan.start"),
         SCAN_ALREADY_SCANNING("scan.already-scanning"),

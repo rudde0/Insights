@@ -219,6 +219,22 @@ final class RefundConfig {
         return settings.GRACEFUL_REFUND_MAX_BLOCKS_PER_RUN;
     }
 
+    /**
+     * Returns how many refunds a chunk gets within the refund window, beyond that blocks are removed without
+     * a refund. Negative if a chunk can be refunded any number of times.
+     */
+    int maxRefundsPerChunk() {
+        return settings.GRACEFUL_REFUND_MAX_REFUNDS_PER_CHUNK;
+    }
+
+    int refundWindowHours() {
+        return settings.GRACEFUL_REFUND_REFUND_WINDOW_HOURS;
+    }
+
+    long refundWindowMillis() {
+        return refundWindowHours() * 60 * 60 * 1000L;
+    }
+
     int notifyRadius() {
         return settings.GRACEFUL_REFUND_NOTIFY_RADIUS;
     }

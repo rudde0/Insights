@@ -62,6 +62,8 @@ public class Settings {
     public final int GRACEFUL_REFUND_DELAY_TICKS;
     public final int GRACEFUL_REFUND_COOLDOWN_SECONDS;
     public final int GRACEFUL_REFUND_MAX_BLOCKS_PER_RUN;
+    public final int GRACEFUL_REFUND_MAX_REFUNDS_PER_CHUNK;
+    public final int GRACEFUL_REFUND_REFUND_WINDOW_HOURS;
     public final int GRACEFUL_REFUND_NOTIFY_RADIUS;
     public final boolean GRACEFUL_REFUND_LOG;
 
@@ -143,6 +145,8 @@ public class Settings {
         GRACEFUL_REFUND_DELAY_TICKS = parser.getInt("settings.graceful-refund.delay-ticks", 100, 1, 20 * 60 * 60);
         GRACEFUL_REFUND_COOLDOWN_SECONDS = parser.getInt("settings.graceful-refund.cooldown-seconds", 60, 1, Integer.MAX_VALUE);
         GRACEFUL_REFUND_MAX_BLOCKS_PER_RUN = parser.getInt("settings.graceful-refund.max-blocks-per-run", 16, 1, 4096);
+        GRACEFUL_REFUND_MAX_REFUNDS_PER_CHUNK = parser.getInt("settings.graceful-refund.max-refunds-per-chunk", 2, -1, Integer.MAX_VALUE);
+        GRACEFUL_REFUND_REFUND_WINDOW_HOURS = parser.getInt("settings.graceful-refund.refund-window-hours", 72, 1, 24 * 365);
         GRACEFUL_REFUND_NOTIFY_RADIUS = parser.getInt("settings.graceful-refund.notify-radius", 64, 0, 1024);
         GRACEFUL_REFUND_LOG = parser.getBoolean("settings.graceful-refund.log", true);
     }

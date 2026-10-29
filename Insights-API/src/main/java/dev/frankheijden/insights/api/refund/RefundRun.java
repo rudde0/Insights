@@ -44,6 +44,7 @@ import java.util.Set;
 import java.util.StringJoiner;
 import java.util.UUID;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 /**
  * A single refund of a chunk. Runs on the thread owning the chunk, from start to end within one tick,
@@ -65,6 +66,8 @@ final class RefundRun {
     private final int maxY;
     private final int[][] found;
     private final int rememberedChest;
+    private final boolean withRefund;
+    private final int maxBlocks;
     private final Set<String> skipReasons = new LinkedHashSet<>();
 
     RefundRun(
@@ -76,7 +79,9 @@ final class RefundRun {
             int minY,
             int maxY,
             int[][] found,
-            int rememberedChest
+            int rememberedChest,
+            boolean withRefund,
+            int budget
     ) {
         this.refund = refund;
         this.plugin = refund.getPlugin();
@@ -88,26 +93,33 @@ final class RefundRun {
         this.maxY = maxY;
         this.found = found;
         this.rememberedChest = rememberedChest;
+        this.withRefund = withRefund;
+        this.maxBlocks = Math.min(cfg.maxBlocksPerRun(), budget);
     }
 
     /**
-     * Removes the blocks beyond the limit and hands them back in a chest.
+     * Removes the blocks beyond the limit and hands them back in a chest, unless the run is not refunded.
      */
     Result run() {
+        if (maxBlocks <= 0) return Result.NOTHING;
+
         RefundGroup[] groups = cfg.groups();
         int[] excess = new int[groups.length];
+        int totalExcess = 0;
         List<List<Block>> candidates = new ArrayList<>(groups.length);
         StringJoiner exceeded = new StringJoiner(", ");
         for (RefundGroup group : groups) {
             List<Block> verified = verify(group);
             int groupExcess = verified.size() - group.limit();
             excess[group.index()] = Math.max(0, groupExcess);
+            totalExcess += excess[group.index()];
             candidates.add(groupExcess > 0 ? removable(group, verified) : List.of());
             if (groupExcess > 0) {
                 exceeded.add(EnumUtils.pretty(group.material()) + " " + verified.size() + "/" + group.limit());
             }
         }
         if (exceeded.length() == 0) return Result.NOTHING;
+        if (!withRefund) return removeWithoutRefund(candidates, excess, totalExcess, exceeded);
 
         // Refunds go into the chest of the previous refund in this chunk if it has room, or else into a new chest.
         Chest existingChest = findRefundChest();
@@ -128,7 +140,7 @@ final class RefundRun {
             }
         }
 
-        return execute(plan, excess, existingChest, spot);
+        return execute(plan, excess, totalExcess, existingChest, spot);
     }
 
     private void logSkipped(StringJoiner exceeded, String reason) {
@@ -217,7 +229,7 @@ final class RefundRun {
         for (RefundGroup group : cfg.groups()) {
             int planned = 0;
             for (Block block : candidates.get(group.index())) {
-                if (planned >= excess[group.index()] || plan.size() >= cfg.maxBlocksPerRun()) break;
+                if (planned >= excess[group.index()] || plan.size() >= maxBlocks) break;
 
                 List<ItemStack> items = refundItems(block, group);
                 if (items == null) continue;
@@ -340,7 +352,7 @@ final class RefundRun {
         return type == Material.AIR || type == Material.CAVE_AIR;
     }
 
-    private Result execute(List<Planned> plan, int[] excess, Chest existingChest, Block spot) {
+    private Result execute(List<Planned> plan, int[] excess, int totalExcess, Chest existingChest, Block spot) {
         Inventory chestInventory = null;
         Block chestBlock;
         List<Planned> order = new ArrayList<>(plan);
@@ -415,7 +427,7 @@ final class RefundRun {
                     plugin.getLogger().severe("Graceful refund could not place a chest at " + format(chestLocation)
                             + ", dropping the refund of " + format(block.getLocation()) + " instead.");
                     drop(items, block.getLocation());
-                    return new Result(false, -1);
+                    return new Result(false, -1, total, totalExcess);
                 }
             }
             store(chestInventory, items, chestLocation);
@@ -436,7 +448,72 @@ final class RefundRun {
         }
 
         announce(refunded, total, chestLocation, positions.toString());
-        return new Result(remaining, positionOf(chestBlock));
+        return new Result(remaining, positionOf(chestBlock), total, totalExcess);
+    }
+
+    /**
+     * Removes the blocks beyond the limit without handing them back, as the chunk got as many refunds lately as it
+     * may get. Only what containers hold is handed back (dropped where they were), that is no part of the refund.
+     */
+    private Result removeWithoutRefund(List<List<Block>> candidates, int[] excess, int totalExcess, StringJoiner exceeded) {
+        RefundGroup[] groups = cfg.groups();
+        int[] allowed = excess.clone();
+        int[] removed = new int[groups.length];
+        int total = 0;
+        Map<Material, Integer> removedBlocks = new EnumMap<>(Material.class);
+        StringJoiner positions = new StringJoiner(" ");
+        Location firstLocation = null;
+        for (RefundGroup group : groups) {
+            int index = group.index();
+            if (allowed[index] <= 0) continue;
+
+            // Removing blocks may affect blocks of other groups (e.g. through physics), so a group is counted again
+            // if blocks of other groups were removed before it.
+            if (total > 0) {
+                allowed[index] = Math.min(allowed[index], verify(group).size() - group.limit());
+            }
+
+            for (Block block : candidates.get(index)) {
+                if (removed[index] >= allowed[index] || total >= maxBlocks) break;
+
+                Material type = block.getType();
+                if (!group.contains(type) || !isTopmost(block, group)) continue;
+
+                // Viewers are closed before the contents are taken, so nothing is taken out or put in after.
+                if (block.getState(false) instanceof Container container) {
+                    container.getInventory().close();
+                }
+
+                // Blocks which can't be handed back as a whole are left alone here too: removing one half of a door
+                // would drop the other half, and data other plugins keep on a block must not be lost either.
+                List<ItemStack> items = refundItems(block, group);
+                if (items == null) continue;
+
+                Location location = block.getLocation();
+                remove(block, type);
+                drop(items.subList(1, items.size()), location);
+                removed[index]++;
+                total++;
+                removedBlocks.merge(group.material(), 1, Integer::sum);
+                positions.add(block.getX() + "," + block.getY() + "," + block.getZ());
+                if (firstLocation == null) firstLocation = location;
+            }
+        }
+
+        if (total == 0) {
+            if (!skipReasons.isEmpty()) {
+                logSkipped(exceeded, "none of those blocks can be removed as a whole: " + String.join(", ", skipReasons));
+            }
+            return Result.NOTHING;
+        }
+
+        boolean remaining = false;
+        for (RefundGroup group : groups) {
+            remaining |= removed[group.index()] < allowed[group.index()];
+        }
+
+        announceRemoved(removedBlocks, total, firstLocation, positions.toString());
+        return new Result(remaining, -1, total, totalExcess);
     }
 
     private static int indexOf(List<Planned> plan, Block block) {
@@ -563,27 +640,58 @@ final class RefundRun {
     }
 
     private void announce(Map<Material, Integer> refunded, int total, Location chestLocation, String positions) {
-        StringJoiner blocks = new StringJoiner(", ");
-        refunded.forEach((material, amount) -> blocks.add(amount + "x " + EnumUtils.pretty(material)));
-
+        String blocks = describe(refunded);
         if (cfg.log()) {
             plugin.getLogger().info("Graceful refund removed " + blocks + " beyond the limit of chunk " + chunkX + ", "
                     + chunkZ + " in '" + world.getName() + "' (" + positions + "), refunded into the chest at "
                     + format(chestLocation) + ".");
         }
 
-        int radius = cfg.notifyRadius();
-        if (radius <= 0) return;
-
-        Messages.Message message = plugin.getMessages().getMessage(Messages.Key.GRACEFUL_REFUND_NOTIFICATION).addTemplates(
-                Messages.tagOf("blocks", blocks.toString()),
+        notifyNearby(chestLocation, () -> plugin.getMessages().getMessage(Messages.Key.GRACEFUL_REFUND_NOTIFICATION).addTemplates(
+                Messages.tagOf("blocks", blocks),
                 Messages.tagOf("amount", total),
                 Messages.tagOf("x", chestLocation.getBlockX()),
                 Messages.tagOf("y", chestLocation.getBlockY()),
                 Messages.tagOf("z", chestLocation.getBlockZ()),
                 Messages.tagOf("world", world.getName())
-        );
-        Location center = chestLocation.toCenterLocation();
+        ));
+    }
+
+    private void announceRemoved(Map<Material, Integer> removed, int total, Location location, String positions) {
+        String blocks = describe(removed);
+        if (cfg.log()) {
+            plugin.getLogger().info("Graceful refund removed " + blocks + " beyond the limit of chunk " + chunkX + ", "
+                    + chunkZ + " in '" + world.getName() + "' (" + positions + ") without a refund, the chunk got "
+                    + cfg.maxRefundsPerChunk() + " refunds within " + cfg.refundWindowHours() + " hours already.");
+        }
+
+        notifyNearby(location, () -> plugin.getMessages().getMessage(Messages.Key.GRACEFUL_REFUND_REMOVED_NOTIFICATION).addTemplates(
+                Messages.tagOf("blocks", blocks),
+                Messages.tagOf("amount", total),
+                Messages.tagOf("refunds", cfg.maxRefundsPerChunk()),
+                Messages.tagOf("hours", cfg.refundWindowHours()),
+                Messages.tagOf("x", location.getBlockX()),
+                Messages.tagOf("y", location.getBlockY()),
+                Messages.tagOf("z", location.getBlockZ()),
+                Messages.tagOf("world", world.getName())
+        ));
+    }
+
+    private static String describe(Map<Material, Integer> blocks) {
+        StringJoiner joiner = new StringJoiner(", ");
+        blocks.forEach((material, amount) -> joiner.add(amount + "x " + EnumUtils.pretty(material)));
+        return joiner.toString();
+    }
+
+    /**
+     * Sends a message to the players within notify-radius of the given location.
+     */
+    private void notifyNearby(Location location, Supplier<Messages.Message> messageSupplier) {
+        int radius = cfg.notifyRadius();
+        if (radius <= 0) return;
+
+        Messages.Message message = messageSupplier.get();
+        Location center = location.toCenterLocation();
         double radiusSquared = (double) radius * radius;
         for (Map.Entry<UUID, Player> entry : plugin.getPlayerList()) {
             Player player = entry.getValue();
@@ -615,10 +723,12 @@ final class RefundRun {
      *
      * @param again whether blocks were removed while more remain beyond the limit, i.e. whether to run again
      * @param chest the position of the chest refunded into (see {@link BlockPositions}), or -1 if none
+     * @param removed how many blocks were removed
+     * @param excess how many blocks were beyond the limit at the start of the run
      */
-    record Result(boolean again, int chest) {
+    record Result(boolean again, int chest, int removed, int excess) {
 
-        static final Result NOTHING = new Result(false, -1);
+        static final Result NOTHING = new Result(false, -1, 0, 0);
     }
 
     private record Planned(Block block, RefundGroup group) {}
